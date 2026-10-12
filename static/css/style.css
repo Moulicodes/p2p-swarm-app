@@ -4,7 +4,6 @@
     padding: 0;
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }
-
 body {
     background-color: #0f172a;
     color: #f8fafc;
@@ -13,43 +12,35 @@ body {
     padding: 2rem;
     min-height: 100vh;
 }
-
 .container {
     width: 100%;
     max-width: 1100px;
 }
-
 header {
     text-align: center;
     margin-bottom: 2rem;
 }
-
 header h1 {
     font-size: 2rem;
     color: #38bdf8;
     margin-bottom: 0.5rem;
 }
-
 .status-offline { color: #f87171; font-weight: bold; }
 .status-online { color: #4ade80; font-weight: bold; }
-
 .grid-layout {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 1.5rem;
 }
-
 .card {
     background: #1e293b;
     border: 1px solid #334155;
     border-radius: 8px;
     padding: 1.5rem;
 }
-
 .full-width {
     grid-column: span 2;
 }
-
 .card h2 {
     font-size: 1.25rem;
     margin-bottom: 1rem;
@@ -57,13 +48,18 @@ header h1 {
     border-bottom: 2px solid #334155;
     padding-bottom: 0.5rem;
 }
-
 .input-group {
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
 }
-
+.search-bar {
+    flex-direction: row;
+    margin-bottom: 1rem;
+}
+.search-bar button {
+    width: 180px;
+}
 input[type="file"], input[type="text"] {
     background: #0f172a;
     border: 1px solid #475569;
@@ -72,7 +68,6 @@ input[type="file"], input[type="text"] {
     border-radius: 4px;
     width: 100%;
 }
-
 button {
     background: #0284c7;
     color: #fff;
@@ -83,11 +78,36 @@ button {
     cursor: pointer;
     transition: background 0.2s;
 }
-
 button:hover {
     background: #0369a1;
 }
-
+.btn-small {
+    padding: 0.35rem 0.6rem;
+    font-size: 0.8rem;
+    background: #10b981;
+}
+.btn-small:hover {
+    background: #059669;
+}
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+    margin-top: 0.5rem;
+}
+.data-table th, .data-table td {
+    padding: 0.6rem;
+    text-align: left;
+    border-bottom: 1px solid #334155;
+}
+.data-table th {
+    background: #0f172a;
+    color: #38bdf8;
+}
+.catalog-table-container, .seeded-table-container {
+    max-height: 180px;
+    overflow-y: auto;
+}
 .info-box {
     margin-top: 1rem;
     background: #0f172a;
@@ -96,9 +116,7 @@ button:hover {
     font-size: 0.9rem;
     word-break: break-all;
 }
-
 .hidden { display: none; }
-
 .progress-bar-container {
     width: 100%;
     background: #334155;
@@ -107,20 +125,17 @@ button:hover {
     overflow: hidden;
     margin: 0.5rem 0;
 }
-
 .progress-fill {
     width: 0%;
     height: 100%;
     background: #22c55e;
     transition: width 0.3s ease;
 }
-
 .telemetry-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 1rem;
 }
-
 .peer-list {
     list-style: none;
     background: #0f172a;
@@ -128,20 +143,17 @@ button:hover {
     border-radius: 4px;
     min-height: 120px;
 }
-
 .peer-item {
     padding: 0.4rem;
     border-bottom: 1px solid #1e293b;
     font-size: 0.85rem;
 }
-
 .empty-msg {
     color: #64748b;
     font-size: 0.85rem;
     text-align: center;
-    padding-top: 2rem;
+    padding-top: 1rem;
 }
-
 .log-window {
     background: #0f172a;
     border: 1px solid #334155;

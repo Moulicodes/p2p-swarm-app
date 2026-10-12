@@ -1,4 +1,3 @@
-// WebRTC Configuration with Reliable STUN and Public TURN Fallbacks
 const rtcConfig = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
@@ -17,8 +16,11 @@ const rtcConfig = {
     ]
 };
 
-// Application State
 const CHUNK_SIZE = 16384; 
+// # multiSeederStore: { file_hash: [ ArrayBuffers ] }
+let multiSeederStore = {};
+let mySeededFilesMeta = [];
+
 let localFileChunks = [];  
 let receivedChunks = {};   
 let peerConnections = {}; 
@@ -28,8 +30,9 @@ let targetTotalChunks = 0;
 let targetFilename = '';
 let currentFileHash = '';
 let chunkRetryInterval = null;
+let peerChunkCounters = {};
 
-// --- SEEDER LOGIC ---
+// --- SEEDER LOGIC: Multi-File Support ---
 async function registerAndSeedFile() {
     const fileInput = document.getElementById('file-input');
     if (!fileInput.files.length) {
@@ -39,42 +42,77 @@ async function registerAndSeedFile() {
     const file = fileInput.files[0];
     logEvent(`Processing file "${file.name}" (${file.size} bytes)...`);
     
-    localFileChunks = [];
+    let fileChunks = [];
     let offset = 0;
     while (offset < file.size) {
         const slice = file.slice(offset, offset + CHUNK_SIZE);
         const buffer = await slice.arrayBuffer();
-        localFileChunks.push(buffer);
+        fileChunks.push(buffer);
         offset += CHUNK_SIZE;
     }
     
-    currentFileHash = await computeSimpleHash(`${file.name}-${file.size}-${file.lastModified}`);
+    const fileHash = await computeSimpleHash(`${file.name}-${file.size}-${file.lastModified}`);
+    multiSeederStore[fileHash] = fileChunks;
     
-    document.getElementById('seed-file-hash').textContent = currentFileHash;
-    document.getElementById('seed-chunk-count').textContent = localFileChunks.length;
-    document.getElementById('seed-info').classList.remove('hidden');
-    
+    // Default active buffer
+    localFileChunks = fileChunks;
+    currentFileHash = fileHash;
+
     socket.emit('register_file', {
-        file_hash: currentFileHash,
+        file_hash: fileHash,
         filename: file.name,
-        total_chunks: localFileChunks.length
+        total_chunks: fileChunks.length
     });
+}
+
+window.addFileToSeededListUI = function(fileHash, filename, totalChunks) {
+    if (!mySeededFilesMeta.some(f => f.hash === fileHash)) {
+        mySeededFilesMeta.push({ hash: fileHash, name: filename, chunks: totalChunks });
+    }
+    
+    const tbody = document.getElementById('seeded-files-list');
+    tbody.innerHTML = '';
+    
+    mySeededFilesMeta.forEach(f => {
+        const tr = document.createElement('tr');
+        const shareableLink = `${window.location.origin}/#fileHash=${f.hash}`;
+        tr.innerHTML = `
+            <td><strong>${f.name}</strong></td>
+            <td>${f.chunks}</td>
+            <td>
+                <button class="btn-small" onclick="copyMagnetLink('${shareableLink}')">Copy Link</button>
+            </td>
+        `;
+        tbody.appendChild(tr);
+    });
+};
+
+function copyMagnetLink(link) {
+    navigator.clipboard.writeText(link);
+    alert('Shareable magnet link copied to clipboard!');
 }
 
 // --- LEECHER LOGIC ---
 function joinSwarmAndDownload() {
     const hashInput = document.getElementById('hash-input').value.trim();
-    if (!hashInput) {
-        alert('Please enter a valid File Hash.');
+    let fileHash = hashInput;
+    if (hashInput.includes('fileHash=')) {
+        fileHash = hashInput.split('fileHash=')[1].split('&')[0];
+    }
+
+    if (!fileHash) {
+        alert('Please enter a valid File Hash or Link.');
         return;
     }
-    currentFileHash = hashInput;
+    
+    currentFileHash = fileHash;
     receivedChunks = {};
+    peerChunkCounters = {};
     
     document.getElementById('download-progress-box').classList.remove('hidden');
     document.getElementById('progress-fill').style.width = '0%';
     document.getElementById('dl-progress-text').textContent = '0%';
-    logEvent(`Requesting swarm telemetry from tracker for Hash: ${currentFileHash.substring(0, 10)}...`);
+    logEvent(`Requesting swarm telemetry for Hash: ${currentFileHash.substring(0, 10)}...`);
     socket.emit('join_swarm', { file_hash: currentFileHash });
 }
 
@@ -88,9 +126,7 @@ window.initiateSwarmConnections = function(peers, totalChunks, filename) {
         return;
     }
     
-    peers.forEach(peer => {
-        createPeerConnection(peer.sid, true);
-    });
+    peers.forEach(peer => createPeerConnection(peer.sid, true));
 
     if (chunkRetryInterval) clearInterval(chunkRetryInterval);
     chunkRetryInterval = setInterval(() => {
@@ -99,14 +135,12 @@ window.initiateSwarmConnections = function(peers, totalChunks, filename) {
         } else {
             clearInterval(chunkRetryInterval);
         }
-    }, 500); // Polling missing chunks every 500ms until 100% complete
+    }, 500);
 };
 
 // --- WEBRTC PIPELINE ---
 function createPeerConnection(targetSid, isInitiator) {
-    if (peerConnections[targetSid]) {
-        return peerConnections[targetSid];
-    }
+    if (peerConnections[targetSid]) return peerConnections[targetSid];
 
     const pc = new RTCPeerConnection(rtcConfig);
     peerConnections[targetSid] = pc;
@@ -125,13 +159,10 @@ function createPeerConnection(targetSid, isInitiator) {
 
         pc.createOffer()
             .then(offer => pc.setLocalDescription(offer))
-            .then(() => {
-                socket.emit('signal_offer', { target: targetSid, offer: pc.localDescription });
-            })
+            .then(() => socket.emit('signal_offer', { target: targetSid, offer: pc.localDescription }))
             .catch(err => logEvent(`Error creating offer: ${err}`));
     } else {
         pc.ondatachannel = (event) => {
-            logEvent(`Incoming DataChannel received from Peer: ${targetSid.substring(0, 8)}`);
             const dc = event.channel;
             setupDataChannelEvents(dc, targetSid);
             dataChannels[targetSid] = dc;
@@ -153,20 +184,30 @@ function setupDataChannelEvents(dc, targetSid) {
         if (typeof event.data === 'string') {
             const msg = JSON.parse(event.data);
             if (msg.type === 'request_chunk') {
-                sendChunkToPeer(targetSid, msg.chunkIndex);
+                sendChunkToPeer(targetSid, msg.chunkIndex, msg.fileHash);
+                updateSeederProgressUI(targetSid);
             }
         } else {
             handleIncomingChunkBuffer(event.data, targetSid);
         }
     };
 
-    dc.onclose = () => {
-        logEvent(`DataChannel CLOSED with Peer: ${targetSid.substring(0, 8)}...`);
-    };
+    dc.onclose = () => logEvent(`DataChannel CLOSED with Peer: ${targetSid.substring(0, 8)}...`);
+    dc.onerror = (err) => logEvent(`DataChannel Error: ${err}`);
+}
 
-    dc.onerror = (err) => {
-        logEvent(`DataChannel Error with ${targetSid.substring(0, 8)}: ${err}`);
-    };
+function updateSeederProgressUI(targetSid) {
+    peerChunkCounters[targetSid] = (peerChunkCounters[targetSid] || 0) + 1;
+    const count = peerChunkCounters[targetSid];
+    const total = targetTotalChunks || 1;
+    const percentage = ((count / total) * 100).toFixed(1);
+
+    const countElem = document.getElementById(`chunk-count-${targetSid}`);
+    const pctElem = document.getElementById(`chunk-pct-${targetSid}`);
+    if (countElem && pctElem) {
+        countElem.textContent = count;
+        pctElem.textContent = `${percentage}%`;
+    }
 }
 
 // --- SIGNALING HANDLERS ---
@@ -174,14 +215,12 @@ window.handleIncomingOffer = async function(fromSid, offer) {
     const pc = createPeerConnection(fromSid, false);
     try {
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
-        
         if (iceCandidatesQueue[fromSid]) {
             while (iceCandidatesQueue[fromSid].length > 0) {
                 const cand = iceCandidatesQueue[fromSid].shift();
                 await pc.addIceCandidate(new RTCIceCandidate(cand));
             }
         }
-
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         socket.emit('signal_answer', { target: fromSid, answer: pc.localDescription });
@@ -202,7 +241,7 @@ window.handleIncomingAnswer = async function(fromSid, answer) {
                 }
             }
         } catch (e) {
-            logEvent(`Error setting answer remote description: ${e}`);
+            logEvent(`Error setting answer: ${e}`);
         }
     }
 };
@@ -213,7 +252,7 @@ window.handleIncomingICE = async function(fromSid, candidate) {
         try {
             await pc.addIceCandidate(new RTCIceCandidate(candidate));
         } catch (e) {
-            logEvent(`Error adding ICE candidate: ${e}`);
+            logEvent(`Error adding ICE: ${e}`);
         }
     } else {
         if (!iceCandidatesQueue[fromSid]) iceCandidatesQueue[fromSid] = [];
@@ -231,19 +270,20 @@ function requestMissingChunks() {
         if (!receivedChunks.hasOwnProperty(i)) {
             const targetSid = openPeerSids[peerIndex % openPeerSids.length];
             const dc = dataChannels[targetSid];
-            // Prevent WebRTC data channel buffer overflow
             if (dc && dc.readyState === 'open' && dc.bufferedAmount < 65536) {
-                dc.send(JSON.stringify({ type: 'request_chunk', chunkIndex: i }));
+                dc.send(JSON.stringify({ type: 'request_chunk', chunkIndex: i, fileHash: currentFileHash }));
                 peerIndex++;
             }
         }
     }
 }
 
-function sendChunkToPeer(targetSid, chunkIndex) {
+function sendChunkToPeer(targetSid, chunkIndex, requestedHash) {
     const dc = dataChannels[targetSid];
-    if (dc && dc.readyState === 'open' && localFileChunks[chunkIndex]) {
-        const chunkBuffer = localFileChunks[chunkIndex];
+    const sourceChunks = multiSeederStore[requestedHash] || localFileChunks;
+    
+    if (dc && dc.readyState === 'open' && sourceChunks[chunkIndex]) {
+        const chunkBuffer = sourceChunks[chunkIndex];
         const header = new Int32Array([chunkIndex]);
         const packet = new Uint8Array(header.byteLength + chunkBuffer.byteLength);
         
@@ -258,7 +298,6 @@ function sendChunkToPeer(targetSid, chunkIndex) {
     }
 }
 
-let peerChunkCounters = {};
 function handleIncomingChunkBuffer(buffer, senderSid) {
     const header = new Int32Array(buffer.slice(0, 4));
     const chunkIndex = header[0];
@@ -285,10 +324,11 @@ function handleIncomingChunkBuffer(buffer, senderSid) {
         document.getElementById('dl-progress-text').textContent = `${progressPercent}%`;
         document.getElementById('dl-chunks-text').textContent = `${downloadedCount}/${targetTotalChunks}`;
 
-        // Exact match check for complete reassembly
         if (downloadedCount === targetTotalChunks) {
             if (chunkRetryInterval) clearInterval(chunkRetryInterval);
             logEvent(`SUCCESS: All ${targetTotalChunks} chunks retrieved via P2P Swarm! Assembling file...`);
+            
+            multiSeederStore[currentFileHash] = Object.keys(receivedChunks).map(k => receivedChunks[k]);
             
             socket.emit('register_file', {
                 file_hash: currentFileHash,
@@ -302,11 +342,8 @@ function handleIncomingChunkBuffer(buffer, senderSid) {
 
 function assembleAndDownloadFile() {
     const orderedBuffers = [];
-    localFileChunks = [];
-    
     for (let i = 0; i < targetTotalChunks; i++) {
         orderedBuffers.push(receivedChunks[i]);
-        localFileChunks.push(receivedChunks[i]);
     }
     
     const blob = new Blob(orderedBuffers);
@@ -319,7 +356,7 @@ function assembleAndDownloadFile() {
     a.click();
     document.body.removeChild(a);
     
-    logEvent(`File "${targetFilename}" successfully saved to local machine & ready for seeding.`);
+    logEvent(`File "${targetFilename}" saved to disk & ready for seeding.`);
 }
 
 async function computeSimpleHash(input) {

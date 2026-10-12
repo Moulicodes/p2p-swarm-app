@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Hybrid P2P Swarm File Transfer</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <!-- Socket.IO Client Library -->
     <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
 </head>
 <body>
@@ -14,26 +13,63 @@
             <h1>Hybrid P2P Swarm Node</h1>
             <p id="node-status" class="status-offline">Connecting to Tracker...</p>
         </header>
-
+        
         <main class="grid-layout">
-            <!-- Seeder Section -->
+            <!-- File Search Catalog Bar -->
+            <section class="card full-width">
+                <h2>Discover & Search Swarm Catalog</h2>
+                <div class="input-group search-bar">
+                    <input type="text" id="search-input" placeholder="Type filename to search active swarms..." onkeyup="filterSwarmCatalog()">
+                    <button onclick="requestSwarmCatalog()">Refresh Catalog</button>
+                </div>
+                <div class="catalog-table-container">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Filename</th>
+                                <th>File Hash</th>
+                                <th>Size (Chunks)</th>
+                                <th>Seeders</th>
+                                <th>Leechers</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="catalog-list">
+                            <tr><td colspan="6" class="empty-msg">No active files in swarm catalog. Upload one to begin!</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Seeder Mode -->
             <section class="card">
                 <h2>Seeder Mode (Upload File)</h2>
                 <div class="input-group">
                     <input type="file" id="file-input">
                     <button id="seed-btn" onclick="registerAndSeedFile()">Seed File to Swarm</button>
                 </div>
-                <div id="seed-info" class="info-box hidden">
-                    <p><strong>File Hash:</strong> <span id="seed-file-hash">-</span></p>
-                    <p><strong>Chunks Generated:</strong> <span id="seed-chunk-count">0</span></p>
+                <h3 style="margin-top: 1rem; font-size: 0.95rem; color: #38bdf8;">Your Active Seeded Files</h3>
+                <div class="seeded-table-container">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Filename</th>
+                                <th>Chunks</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="seeded-files-list">
+                            <tr><td colspan="3" class="empty-msg">No active uploads yet.</td></tr>
+                        </tbody>
+                    </table>
                 </div>
             </section>
 
-            <!-- Leecher Section -->
+            <!-- Leecher Mode -->
             <section class="card">
                 <h2>Leecher Mode (Download File)</h2>
                 <div class="input-group">
-                    <input type="text" id="hash-input" placeholder="Enter Target File Hash">
+                    <input type="text" id="hash-input" placeholder="Enter File Hash or Link">
                     <button id="join-btn" onclick="joinSwarmAndDownload()">Join Swarm & Download</button>
                 </div>
                 <div id="download-progress-box" class="info-box hidden">
@@ -47,10 +83,10 @@
 
             <!-- Swarm Telemetry Section -->
             <section class="card full-width">
-                <h2>Active Swarm Telemetry & Chunk Metrics</h2>
+                <h2>Active Swarm Telemetry & Node Performance</h2>
                 <div class="telemetry-grid">
                     <div>
-                        <h3>Connected Peers & Download Breakdown</h3>
+                        <h3>Connected Peers & Transfer Breakdown (<span id="active-leechers-count">0</span> Active Leechers)</h3>
                         <ul id="peer-list" class="peer-list">
                             <li class="empty-msg">No active swarm connections.</li>
                         </ul>
@@ -64,7 +100,6 @@
         </main>
     </div>
 
-    <!-- P2P Logic Scripts -->
     <script src="{{ url_for('static', filename='js/socket_signaling.js') }}"></script>
     <script src="{{ url_for('static', filename='js/webrtc_engine.js') }}"></script>
 </body>
