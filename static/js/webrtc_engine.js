@@ -1,9 +1,19 @@
-// WebRTC Configuration with Reliable STUN Servers
+// WebRTC Configuration with Reliable STUN and Public TURN Fallbacks
 const rtcConfig = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' }
+        { urls: 'stun:stun2.l.google.com:19302' },
+        {
+            urls: 'turn:openrelay.metered.ca:80',
+            username: 'openrelay',
+            credential: 'openrelay'
+        },
+        {
+            urls: 'turn:openrelay.metered.ca:443',
+            username: 'openrelay',
+            credential: 'openrelay'
+        }
     ]
 };
 
@@ -13,7 +23,7 @@ let localFileChunks = [];
 let receivedChunks = {};   
 let peerConnections = {}; 
 let dataChannels = {};    
-let iceCandidatesQueue = {}; // Queue ICE candidates if remote description isn't set yet
+let iceCandidatesQueue = {}; 
 let targetTotalChunks = 0;
 let targetFilename = '';
 let currentFileHash = '';
@@ -89,7 +99,7 @@ window.initiateSwarmConnections = function(peers, totalChunks, filename) {
         } else {
             clearInterval(chunkRetryInterval);
         }
-    }, 1000);
+    }, 500); // Polling missing chunks every 500ms until 100% complete
 };
 
 // --- WEBRTC PIPELINE ---
@@ -165,7 +175,6 @@ window.handleIncomingOffer = async function(fromSid, offer) {
     try {
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
         
-        // Process queued ICE candidates
         if (iceCandidatesQueue[fromSid]) {
             while (iceCandidatesQueue[fromSid].length > 0) {
                 const cand = iceCandidatesQueue[fromSid].shift();
@@ -177,7 +186,7 @@ window.handleIncomingOffer = async function(fromSid, offer) {
         await pc.setLocalDescription(answer);
         socket.emit('signal_answer', { target: fromSid, answer: pc.localDescription });
     } catch (e) {
-        logEvent(`Error handling offer from ${fromSid.substring(0,8)}: ${e}`);
+        logEvent(`Error handling offer: ${e}`);
     }
 };
 
@@ -207,7 +216,6 @@ window.handleIncomingICE = async function(fromSid, candidate) {
             logEvent(`Error adding ICE candidate: ${e}`);
         }
     } else {
-        // Queue ICE candidate if remote description isn't set yet
         if (!iceCandidatesQueue[fromSid]) iceCandidatesQueue[fromSid] = [];
         iceCandidatesQueue[fromSid].push(candidate);
     }
@@ -223,7 +231,8 @@ function requestMissingChunks() {
         if (!receivedChunks.hasOwnProperty(i)) {
             const targetSid = openPeerSids[peerIndex % openPeerSids.length];
             const dc = dataChannels[targetSid];
-            if (dc && dc.readyState === 'open') {
+            // Prevent WebRTC data channel buffer overflow
+            if (dc && dc.readyState === 'open' && dc.bufferedAmount < 65536) {
                 dc.send(JSON.stringify({ type: 'request_chunk', chunkIndex: i }));
                 peerIndex++;
             }
@@ -240,7 +249,12 @@ function sendChunkToPeer(targetSid, chunkIndex) {
         
         packet.set(new Uint8Array(header.buffer), 0);
         packet.set(new Uint8Array(chunkBuffer), header.byteLength);
-        dc.send(packet.buffer);
+        
+        try {
+            dc.send(packet.buffer);
+        } catch (e) {
+            console.error(`Error sending chunk ${chunkIndex}:`, e);
+        }
     }
 }
 
@@ -271,6 +285,7 @@ function handleIncomingChunkBuffer(buffer, senderSid) {
         document.getElementById('dl-progress-text').textContent = `${progressPercent}%`;
         document.getElementById('dl-chunks-text').textContent = `${downloadedCount}/${targetTotalChunks}`;
 
+        // Exact match check for complete reassembly
         if (downloadedCount === targetTotalChunks) {
             if (chunkRetryInterval) clearInterval(chunkRetryInterval);
             logEvent(`SUCCESS: All ${targetTotalChunks} chunks retrieved via P2P Swarm! Assembling file...`);
