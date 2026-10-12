@@ -1,20 +1,19 @@
-// WebRTC Configuration with Multiple Reliable Public STUN Servers
+// WebRTC Configuration with Reliable STUN Servers
 const rtcConfig = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun3.l.google.com:19302' },
-        { urls: 'stun:stun4.l.google.com:19302' }
+        { urls: 'stun:stun2.l.google.com:19302' }
     ]
 };
 
 // Application State
-const CHUNK_SIZE = 16384; // 16 KB per chunk
+const CHUNK_SIZE = 16384; 
 let localFileChunks = [];  
 let receivedChunks = {};   
 let peerConnections = {}; 
 let dataChannels = {};    
+let iceCandidatesQueue = {}; // Queue ICE candidates if remote description isn't set yet
 let targetTotalChunks = 0;
 let targetFilename = '';
 let currentFileHash = '';
@@ -83,7 +82,6 @@ window.initiateSwarmConnections = function(peers, totalChunks, filename) {
         createPeerConnection(peer.sid, true);
     });
 
-    // Keep checking and requesting missing chunks every 1 second until complete
     if (chunkRetryInterval) clearInterval(chunkRetryInterval);
     chunkRetryInterval = setInterval(() => {
         if (Object.keys(receivedChunks).length < targetTotalChunks) {
@@ -96,8 +94,13 @@ window.initiateSwarmConnections = function(peers, totalChunks, filename) {
 
 // --- WEBRTC PIPELINE ---
 function createPeerConnection(targetSid, isInitiator) {
+    if (peerConnections[targetSid]) {
+        return peerConnections[targetSid];
+    }
+
     const pc = new RTCPeerConnection(rtcConfig);
     peerConnections[targetSid] = pc;
+    iceCandidatesQueue[targetSid] = [];
 
     pc.onicecandidate = (event) => {
         if (event.candidate) {
@@ -114,14 +117,18 @@ function createPeerConnection(targetSid, isInitiator) {
             .then(offer => pc.setLocalDescription(offer))
             .then(() => {
                 socket.emit('signal_offer', { target: targetSid, offer: pc.localDescription });
-            });
+            })
+            .catch(err => logEvent(`Error creating offer: ${err}`));
     } else {
         pc.ondatachannel = (event) => {
+            logEvent(`Incoming DataChannel received from Peer: ${targetSid.substring(0, 8)}`);
             const dc = event.channel;
             setupDataChannelEvents(dc, targetSid);
             dataChannels[targetSid] = dc;
         };
     }
+
+    return pc;
 }
 
 function setupDataChannelEvents(dc, targetSid) {
@@ -146,35 +153,69 @@ function setupDataChannelEvents(dc, targetSid) {
     dc.onclose = () => {
         logEvent(`DataChannel CLOSED with Peer: ${targetSid.substring(0, 8)}...`);
     };
+
+    dc.onerror = (err) => {
+        logEvent(`DataChannel Error with ${targetSid.substring(0, 8)}: ${err}`);
+    };
 }
 
 // --- SIGNALING HANDLERS ---
 window.handleIncomingOffer = async function(fromSid, offer) {
-    createPeerConnection(fromSid, false);
-    const pc = peerConnections[fromSid];
-    await pc.setRemoteDescription(new RTCSessionDescription(offer));
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    socket.emit('signal_answer', { target: fromSid, answer: pc.localDescription });
+    const pc = createPeerConnection(fromSid, false);
+    try {
+        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        
+        // Process queued ICE candidates
+        if (iceCandidatesQueue[fromSid]) {
+            while (iceCandidatesQueue[fromSid].length > 0) {
+                const cand = iceCandidatesQueue[fromSid].shift();
+                await pc.addIceCandidate(new RTCIceCandidate(cand));
+            }
+        }
+
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        socket.emit('signal_answer', { target: fromSid, answer: pc.localDescription });
+    } catch (e) {
+        logEvent(`Error handling offer from ${fromSid.substring(0,8)}: ${e}`);
+    }
 };
 
 window.handleIncomingAnswer = async function(fromSid, answer) {
     const pc = peerConnections[fromSid];
     if (pc) {
-        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+        try {
+            await pc.setRemoteDescription(new RTCSessionDescription(answer));
+            if (iceCandidatesQueue[fromSid]) {
+                while (iceCandidatesQueue[fromSid].length > 0) {
+                    const cand = iceCandidatesQueue[fromSid].shift();
+                    await pc.addIceCandidate(new RTCIceCandidate(cand));
+                }
+            }
+        } catch (e) {
+            logEvent(`Error setting answer remote description: ${e}`);
+        }
     }
 };
 
 window.handleIncomingICE = async function(fromSid, candidate) {
     const pc = peerConnections[fromSid];
-    if (pc) {
-        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+        try {
+            await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (e) {
+            logEvent(`Error adding ICE candidate: ${e}`);
+        }
+    } else {
+        // Queue ICE candidate if remote description isn't set yet
+        if (!iceCandidatesQueue[fromSid]) iceCandidatesQueue[fromSid] = [];
+        iceCandidatesQueue[fromSid].push(candidate);
     }
 };
 
 // --- CHUNK TRANSFER ---
 function requestMissingChunks() {
-    const openPeerSids = Object.keys(dataChannels).filter(sid => dataChannels[sid].readyState === 'open');
+    const openPeerSids = Object.keys(dataChannels).filter(sid => dataChannels[sid] && dataChannels[sid].readyState === 'open');
     if (openPeerSids.length === 0) return;
 
     let peerIndex = 0;
