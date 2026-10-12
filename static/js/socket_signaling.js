@@ -1,5 +1,5 @@
 // Initialize Socket.IO connection
-const socket = io();
+const socket = io("https://p2p-swarm-app.onrender.com/");
 
 // UI Elements
 const nodeStatus = document.getElementById('node-status');
