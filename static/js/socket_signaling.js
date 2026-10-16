@@ -3,6 +3,7 @@ const socket = io();
 let myPeerSid = null;
 let myFriendlyName = 'Initializing...';
 let isUserLoggedIn = false;
+let peerNamesMap = {}; // Maps socket ID (sid) -> Node ID / Username
 
 socket.on('connect', () => {
     myPeerSid = socket.id;
@@ -13,7 +14,7 @@ socket.on('connect', () => {
         .then(data => {
             if (data.logged_in) {
                 isUserLoggedIn = true;
-                myFriendlyName = data.node_id;
+                myFriendlyName = `${data.node_id} (${data.username})`;
                 updateHeaderNodeStatus(`Connected as ${data.node_id} (${data.username})`, 'online');
             } else {
                 isUserLoggedIn = false;
@@ -61,6 +62,13 @@ socket.on('swarm_info', (data) => {
 
     document.getElementById('dl-filename').textContent = targetFilename;
     document.getElementById('dl-chunks-text').textContent = `0/${targetTotalChunks}`;
+
+    // Cache friendly names of active seeders
+    if (data.peers && data.peers.length > 0) {
+        data.peers.forEach(p => {
+            peerNamesMap[p.sid] = p.friendly_name;
+        });
+    }
     
     if (data.peers.length === 0) {
         logEvent('Warning: No seeders currently available in swarm.');
@@ -73,8 +81,9 @@ socket.on('swarm_info', (data) => {
 
 socket.on('connect_to_leecher', (data) => {
     logEvent(`Initiating connection offer to newly joined leecher: ${data.friendly_name}`);
+    peerNamesMap[data.leecher_sid] = data.friendly_name;
     if (typeof createPeerConnection === 'function') {
-        createPeerConnection(data.leecher_sid, true);
+        createPeerConnection(data.leecher_sid, true, data.friendly_name);
     }
 });
 
@@ -180,4 +189,14 @@ function showToast(message, type = 'info') {
 function removePeerFromUI(sid) {
     const elem = document.getElementById(`peer-item-${sid}`);
     if (elem) elem.remove();
+    updateActivePeerCount();
+}
+
+function updateActivePeerCount() {
+    const peerList = document.getElementById('peer-list');
+    const countElem = document.getElementById('active-leechers-count');
+    if (!peerList || !countElem) return;
+
+    const activeCount = peerList.querySelectorAll('li:not(.empty-msg)').length;
+    countElem.textContent = activeCount;
 }

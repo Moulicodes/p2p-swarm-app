@@ -243,8 +243,8 @@ function joinSwarmAndDownload() {
     socket.emit('join_swarm', { file_hash: currentFileHash });
 }
 
-// --- WEBRTC PIPELINE WITH ASYMMETRIC OFFER NEGOTIATION ---
-function createPeerConnection(targetSid, isInitiator) {
+// --- WEBRTC PIPELINE WITH LIVE TELEMETRY & FRIENDLY NAMES ---
+function createPeerConnection(targetSid, isInitiator, friendlyName) {
     if (peerConnections[targetSid]) {
         const state = peerConnections[targetSid].signalingState;
         if (state !== 'closed') {
@@ -268,7 +268,7 @@ function createPeerConnection(targetSid, isInitiator) {
 
     if (isInitiator) {
         const dc = pc.createDataChannel('fileTransferChannel');
-        setupDataChannelEvents(dc, targetSid);
+        setupDataChannelEvents(dc, targetSid, friendlyName);
         dataChannels[targetSid] = dc;
 
         pc.createOffer()
@@ -279,7 +279,7 @@ function createPeerConnection(targetSid, isInitiator) {
         pc.ondatachannel = (event) => {
             logEvent(`Incoming DataChannel received from Peer: ${targetSid.substring(0, 8)}`);
             const dc = event.channel;
-            setupDataChannelEvents(dc, targetSid);
+            setupDataChannelEvents(dc, targetSid, friendlyName);
             dataChannels[targetSid] = dc;
         };
     }
@@ -287,15 +287,16 @@ function createPeerConnection(targetSid, isInitiator) {
     return pc;
 }
 
-function setupDataChannelEvents(dc, targetSid) {
+function setupDataChannelEvents(dc, targetSid, optionalName) {
     dc.binaryType = 'arraybuffer';
     
     dc.onopen = () => {
         logEvent(`P2P DataChannel OPENED with Peer: ${targetSid.substring(0, 8)}...`);
         showToast('P2P Direct Channel Opened!', 'success');
         
-        // Render Peer Card in Active Swarm Telemetry UI
-        addPeerToUI(targetSid);
+        // Lookup friendly username
+        const friendlyName = optionalName || peerNamesMap[targetSid] || `Peer-${targetSid.substring(0, 6)}`;
+        addPeerToUI(targetSid, friendlyName);
         
         requestMissingChunks();
     };
@@ -320,12 +321,11 @@ function setupDataChannelEvents(dc, targetSid) {
     dc.onerror = (err) => logEvent(`DataChannel Error: ${err}`);
 }
 
-// --- TELEMETRY DOM HELPERS ---
-function addPeerToUI(sid) {
+// --- TELEMETRY UI DOM HELPERS ---
+function addPeerToUI(sid, displayName) {
     const peerList = document.getElementById('peer-list');
     if (!peerList) return;
 
-    // Clear empty message if present
     const emptyMsg = peerList.querySelector('.empty-msg');
     if (emptyMsg) emptyMsg.remove();
 
@@ -337,7 +337,7 @@ function addPeerToUI(sid) {
     
     li.innerHTML = `
         <div>
-            <strong style="color: #38bdf8;">Peer-${sid.substring(0, 6)}</strong>
+            <strong style="color: #38bdf8;">${displayName}</strong>
             <span style="color: #4ade80; font-size: 0.75rem; margin-left: 0.5rem;">Connected</span>
         </div>
         <div>
@@ -347,26 +347,6 @@ function addPeerToUI(sid) {
 
     peerList.appendChild(li);
     updateActivePeerCount();
-}
-
-function removePeerFromUI(sid) {
-    const elem = document.getElementById(`peer-item-${sid}`);
-    if (elem) elem.remove();
-
-    const peerList = document.getElementById('peer-list');
-    if (peerList && peerList.children.length === 0) {
-        peerList.innerHTML = '<li class="empty-msg">No active swarm connections.</li>';
-    }
-    updateActivePeerCount();
-}
-
-function updateActivePeerCount() {
-    const peerList = document.getElementById('peer-list');
-    const countElem = document.getElementById('active-leechers-count');
-    if (!peerList || !countElem) return;
-
-    const activeCount = peerList.querySelectorAll('li:not(.empty-msg)').length;
-    countElem.textContent = activeCount;
 }
 
 function updateSeederProgressUI(targetSid, fileHash, chunkIndex) {
@@ -387,8 +367,29 @@ function updateSeederProgressUI(targetSid, fileHash, chunkIndex) {
     }
 }
 
+function updateLeecherProgressUI(senderSid) {
+    if (!peerReceivedChunkSets[senderSid]) {
+        peerReceivedChunkSets[senderSid] = new Set();
+    }
+    
+    const chunkCount = Object.keys(receivedChunks).length;
+    peerReceivedChunkSets[senderSid].add(chunkCount);
+
+    const uniqueCount = Object.keys(receivedChunks).length;
+    const total = targetTotalChunks || 1;
+    const percentage = Math.min(100, ((uniqueCount / total) * 100)).toFixed(1);
+
+    const countElem = document.getElementById(`chunk-count-${senderSid}`);
+    const pctElem = document.getElementById(`chunk-pct-${senderSid}`);
+    if (countElem && pctElem) {
+        countElem.textContent = uniqueCount;
+        pctElem.textContent = `${percentage}%`;
+    }
+}
+
 window.handleIncomingOffer = async function(fromSid, offer) {
-    const pc = createPeerConnection(fromSid, false);
+    const friendlyName = peerNamesMap[fromSid] || `Peer-${fromSid.substring(0, 6)}`;
+    const pc = createPeerConnection(fromSid, false, friendlyName);
     try {
         if (pc.signalingState !== "stable") {
             await Promise.all([
@@ -508,6 +509,9 @@ function handleIncomingChunkBuffer(buffer, senderSid) {
         document.getElementById('progress-fill').style.width = `${progressPercent}%`;
         document.getElementById('dl-progress-text').textContent = `${progressPercent}%`;
         document.getElementById('dl-chunks-text').textContent = `${downloadedCount}/${targetTotalChunks}`;
+
+        // Update live chunk progress for this specific seeder in the Connected Peers UI
+        updateLeecherProgressUI(senderSid);
 
         if (downloadedCount === targetTotalChunks) {
             if (chunkRetryInterval) clearInterval(chunkRetryInterval);
