@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hybrid P2P Swarm File Transfer</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=2.0">
+    <title>Hybrid P2P Swarm Node</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=2.1">
     <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
 </head>
 <body>
@@ -19,9 +19,6 @@
                 {% if current_user.is_authenticated %}
                     <span>Logged in as <strong>{{ current_user.username }}</strong> ({{ current_user.node_id }})</span>
                     <a href="/logout" class="btn-small btn-danger">Logout</a>
-                {% else %}
-                    <button class="btn-small" onclick="toggleAuthModal('login')">Login</button>
-                    <button class="btn-small btn-secondary" onclick="toggleAuthModal('register')">Register</button>
                 {% endif %}
             </div>
         </header>
@@ -37,7 +34,6 @@
         {% endwith %}
         
         <main class="grid-layout">
-            <!-- Search Catalog -->
             <section class="card full-width">
                 <h2>Discover & Search Swarm Catalog</h2>
                 <div class="input-group search-bar">
@@ -63,7 +59,6 @@
                 </div>
             </section>
 
-            <!-- Seeder Mode -->
             <section class="card">
                 <h2>Seeder Mode (Upload File)</h2>
                 <div class="input-group">
@@ -72,7 +67,7 @@
                 </div>
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 1rem;">
                     <h3 style="font-size: 0.95rem; color: #38bdf8;">Your Active Seeded Files (Saved Locally)</h3>
-                    <button class="btn-small btn-danger" onclick="clearLocalStorageAndReload()">Clear Saved Files</button>
+                    <button class="btn-small btn-danger" onclick="clearAllLocalStorageAndReload()">Clear All Files</button>
                 </div>
                 <div class="seeded-table-container">
                     <table class="data-table">
@@ -80,7 +75,7 @@
                             <tr>
                                 <th>Filename</th>
                                 <th>Chunks</th>
-                                <th>Action</th>
+                                <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody id="seeded-files-list">
@@ -90,7 +85,6 @@
                 </div>
             </section>
 
-            <!-- Leecher Mode -->
             <section class="card">
                 <h2>Leecher Mode (Download File)</h2>
                 <div class="input-group">
@@ -106,7 +100,6 @@
                 </div>
             </section>
 
-            <!-- Telemetry -->
             <section class="card full-width">
                 <h2>Active Swarm Telemetry & Node Performance</h2>
                 <div class="telemetry-grid">
@@ -125,66 +118,6 @@
         </main>
     </div>
 
-    <!-- Auth Modal Form -->
-    <div id="auth-modal" class="modal" style="display: none;">
-        <div class="modal-content">
-            <span class="close-btn" onclick="toggleAuthModal()">&times;</span>
-            <h2 id="modal-title">Account Login</h2>
-            
-            <form id="login-form" action="/login" method="POST">
-                <div class="form-group">
-                    <label>Username</label>
-                    <input type="text" name="username" required>
-                </div>
-                <div class="form-group">
-                    <label>Password</label>
-                    <input type="password" name="password" required>
-                </div>
-                <button type="submit" style="width:100%; margin-top:1.25rem;">Login</button>
-            </form>
-
-            <form id="register-form" action="/register" method="POST" style="display: none;">
-                <div class="form-group">
-                    <label>Username</label>
-                    <input type="text" name="username" required>
-                </div>
-                <div class="form-group">
-                    <label>Email</label>
-                    <input type="email" name="email" required>
-                </div>
-                <div class="form-group">
-                    <label>Password</label>
-                    <input type="password" name="password" required>
-                </div>
-                <button type="submit" style="width:100%; margin-top:1.25rem;">Register Account</button>
-            </form>
-        </div>
-    </div>
-
-    <script>
-        function toggleAuthModal(mode) {
-            const modal = document.getElementById('auth-modal');
-            const loginForm = document.getElementById('login-form');
-            const regForm = document.getElementById('register-form');
-            const title = document.getElementById('modal-title');
-
-            if (!mode) {
-                modal.style.display = 'none';
-                return;
-            }
-
-            modal.style.display = 'flex';
-            if (mode === 'login') {
-                title.textContent = 'Account Login';
-                loginForm.style.display = 'block';
-                regForm.style.display = 'none';
-            } else {
-                title.textContent = 'Register Account';
-                loginForm.style.display = 'none';
-                regForm.style.display = 'block';
-            }
-        }
-    </script>
     <script src="{{ url_for('static', filename='js/socket_signaling.js') }}"></script>
     <script src="{{ url_for('static', filename='js/webrtc_engine.js') }}"></script>
 </body>

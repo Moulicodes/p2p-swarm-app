@@ -33,7 +33,6 @@ let targetFilename = '';
 let currentFileHash = '';
 let chunkRetryInterval = null;
 
-// Telemetry sets per peer
 let peerServedChunkSets = {};
 let peerReceivedChunkSets = {};
 
@@ -60,6 +59,13 @@ function saveFileToIDB(fileHash, filename, chunks) {
     store.put({ fileHash, filename, chunks });
 }
 
+function deleteFileFromIDB(fileHash) {
+    if (!db) return;
+    const tx = db.transaction("seeded_files", "readwrite");
+    const store = tx.objectStore("seeded_files");
+    store.delete(fileHash);
+}
+
 function loadStoredFilesFromIDB() {
     if (!db) return;
     const tx = db.transaction("seeded_files", "readonly");
@@ -71,26 +77,42 @@ function loadStoredFilesFromIDB() {
         records.forEach(rec => {
             multiSeederStore[rec.fileHash] = rec.chunks;
             fileMetaStore[rec.fileHash] = rec.chunks.length;
+            
+            if (!mySeededFilesMeta.some(f => f.hash === rec.fileHash)) {
+                mySeededFilesMeta.push({ hash: rec.fileHash, name: rec.filename, chunks: rec.chunks.length });
+            }
             window.addFileToSeededListUI(rec.fileHash, rec.filename, rec.chunks.length);
+
+            if (socket && socket.connected) {
+                socket.emit('register_file', {
+                    file_hash: rec.fileHash,
+                    filename: rec.filename,
+                    total_chunks: rec.chunks.length
+                });
+            }
         });
-        window.reRegisterStoredFiles();
     };
 }
 
-window.reRegisterStoredFiles = function() {
-    if (Object.keys(multiSeederStore).length > 0 && socket && socket.connected) {
-        mySeededFilesMeta.forEach(item => {
-            socket.emit('register_file', {
-                file_hash: item.hash,
-                filename: item.name,
-                total_chunks: item.chunks
-            });
-        });
-    }
-};
+// --- SINGLE FILE UN-SEEDING ---
+function removeSingleFileFromSeeder(fileHash) {
+    if (confirm("Stop seeding this file and remove it from local storage?")) {
+        deleteFileFromIDB(fileHash);
+        delete multiSeederStore[fileHash];
+        delete fileMetaStore[fileHash];
 
-function clearLocalStorageAndReload() {
-    if (confirm("Are you sure you want to clear locally saved files on this node?")) {
+        mySeededFilesMeta = mySeededFilesMeta.filter(f => f.hash !== fileHash);
+        window.renderSeededFilesTableUI();
+
+        if (socket && socket.connected) {
+            socket.emit('unregister_file', { file_hash: fileHash });
+        }
+        showToast("File un-seeded successfully.", "info");
+    }
+}
+
+function clearAllLocalStorageAndReload() {
+    if (confirm("Are you sure you want to clear ALL locally saved files on this node?")) {
         const req = indexedDB.deleteDatabase("SwarmP2PStorage");
         req.onsuccess = function() {
             showToast("Local P2P storage cleared!", "success");
@@ -99,7 +121,7 @@ function clearLocalStorageAndReload() {
     }
 }
 
-// --- SEEDER LOGIC: Atomic File Processing Before Catalog Registration ---
+// --- SEEDER LOGIC ---
 async function registerAndSeedFile() {
     const fileInput = document.getElementById('file-input');
     const seedBtn = document.getElementById('seed-btn');
@@ -152,18 +174,28 @@ window.addFileToSeededListUI = function(fileHash, filename, totalChunks) {
     if (!mySeededFilesMeta.some(f => f.hash === fileHash)) {
         mySeededFilesMeta.push({ hash: fileHash, name: filename, chunks: totalChunks });
     }
-    
+    window.renderSeededFilesTableUI();
+};
+
+window.renderSeededFilesTableUI = function() {
     const tbody = document.getElementById('seeded-files-list');
+    if (!tbody) return;
+
+    if (mySeededFilesMeta.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="3" class="empty-msg">No active uploads yet.</td></tr>';
+        return;
+    }
+
     tbody.innerHTML = '';
-    
     mySeededFilesMeta.forEach(f => {
         const tr = document.createElement('tr');
         const shareableLink = `${window.location.origin}/#fileHash=${f.hash}`;
         tr.innerHTML = `
             <td><strong>${f.name}</strong></td>
             <td>${f.chunks}</td>
-            <td>
+            <td style="display: flex; gap: 0.35rem;">
                 <button class="btn-small" onclick="copyMagnetLink('${shareableLink}')">Copy Link</button>
+                <button class="btn-small btn-danger" onclick="removeSingleFileFromSeeder('${f.hash}')">Stop Seeding</button>
             </td>
         `;
         tbody.appendChild(tr);
@@ -200,7 +232,7 @@ function joinSwarmAndDownload() {
     joinBtn.disabled = true;
     joinBtn.textContent = "Connecting to Swarm...";
 
-    document.getElementById('download-progress-box').classList.remove('hidden');
+    document.getElementById('download-progress-box').style.display = 'block';
     document.getElementById('progress-fill').style.width = '0%';
     document.getElementById('dl-progress-text').textContent = '0%';
     logEvent(`Requesting swarm telemetry for Hash: ${currentFileHash.substring(0, 10)}...`);
@@ -297,7 +329,6 @@ function setupDataChannelEvents(dc, targetSid) {
             const msg = JSON.parse(event.data);
             if (msg.type === 'request_chunk') {
                 sendChunkToPeer(targetSid, msg.chunkIndex, msg.fileHash);
-                updateSeederProgressUI(targetSid, msg.fileHash, msg.chunkIndex);
             }
         } else {
             handleIncomingChunkBuffer(event.data, targetSid);
@@ -308,26 +339,6 @@ function setupDataChannelEvents(dc, targetSid) {
     dc.onerror = (err) => logEvent(`DataChannel Error: ${err}`);
 }
 
-function updateSeederProgressUI(targetSid, fileHash, chunkIndex) {
-    if (!peerServedChunkSets[targetSid]) {
-        peerServedChunkSets[targetSid] = new Set();
-    }
-    
-    peerServedChunkSets[targetSid].add(chunkIndex);
-    
-    const uniqueCount = peerServedChunkSets[targetSid].size;
-    const total = fileMetaStore[fileHash] || targetTotalChunks || 1;
-    const percentage = Math.min(100, ((uniqueCount / total) * 100)).toFixed(1);
-
-    const countElem = document.getElementById(`chunk-count-${targetSid}`);
-    const pctElem = document.getElementById(`chunk-pct-${targetSid}`);
-    if (countElem && pctElem) {
-        countElem.textContent = uniqueCount;
-        pctElem.textContent = `${percentage}%`;
-    }
-}
-
-// --- SIGNALING HANDLERS ---
 window.handleIncomingOffer = async function(fromSid, offer) {
     const pc = createPeerConnection(fromSid, false);
     try {
@@ -377,7 +388,6 @@ window.handleIncomingICE = async function(fromSid, candidate) {
     }
 };
 
-// --- CHUNK TRANSFER WITH TRUE PARALLEL SWARM BALANCING ---
 function requestMissingChunks() {
     const openPeerSids = Object.keys(dataChannels).filter(
         sid => dataChannels[sid] && dataChannels[sid].readyState === 'open'
@@ -435,21 +445,6 @@ function handleIncomingChunkBuffer(buffer, senderSid) {
 
     if (!receivedChunks.hasOwnProperty(chunkIndex)) {
         receivedChunks[chunkIndex] = chunkData;
-
-        if (!peerReceivedChunkSets[senderSid]) {
-            peerReceivedChunkSets[senderSid] = new Set();
-        }
-        peerReceivedChunkSets[senderSid].add(chunkIndex);
-
-        const peerChunksReceived = peerReceivedChunkSets[senderSid].size;
-        const peerPercentage = Math.min(100, ((peerChunksReceived / targetTotalChunks) * 100)).toFixed(1);
-        
-        const countElem = document.getElementById(`chunk-count-${senderSid}`);
-        const pctElem = document.getElementById(`chunk-pct-${senderSid}`);
-        if (countElem && pctElem) {
-            countElem.textContent = peerChunksReceived;
-            pctElem.textContent = `${peerPercentage}%`;
-        }
 
         const downloadedCount = Object.keys(receivedChunks).length;
         const progressPercent = Math.floor((downloadedCount / targetTotalChunks) * 100);

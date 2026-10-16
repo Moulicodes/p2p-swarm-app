@@ -4,12 +4,10 @@ let myPeerSid = null;
 let myFriendlyName = 'Initializing...';
 let isUserLoggedIn = false;
 
-// --- SOCKET CONNECTION HANDLERS ---
 socket.on('connect', () => {
     myPeerSid = socket.id;
     logEvent(`Connected to signaling server tracker (Socket ID: ${myPeerSid.substring(0, 8)}...)`);
     
-    // Check user authentication status on connection
     fetch('/api/user_info')
         .then(res => res.json())
         .then(data => {
@@ -22,9 +20,12 @@ socket.on('connect', () => {
                 myFriendlyName = `Node-${myPeerSid.substring(0, 4).toUpperCase()}`;
                 updateHeaderNodeStatus(`Connected as ${myFriendlyName} (Guest)`, 'online');
             }
+
+            if (typeof loadStoredFilesFromIDB === 'function') {
+                loadStoredFilesFromIDB();
+            }
         });
 
-    // Request initial swarm catalog
     requestSwarmCatalog();
 });
 
@@ -38,7 +39,6 @@ socket.on('assigned_peer_name', (data) => {
     updateHeaderNodeStatus(`Connected as ${data.friendly_name}`, 'online');
 });
 
-// --- CATALOG & SWARM TRACKER LISTENERS ---
 socket.on('catalog_update', (data) => {
     renderSwarmCatalogUI(data.catalog);
 });
@@ -48,15 +48,20 @@ socket.on('file_registered_ack', (data) => {
     requestSwarmCatalog();
 });
 
+socket.on('file_unregistered_ack', (data) => {
+    logEvent(`File hash ${data.file_hash.substring(0, 10)}... removed from tracker.`);
+    requestSwarmCatalog();
+});
+
 socket.on('swarm_info', (data) => {
     logEvent(`Swarm metadata received for hash: ${data.file_hash.substring(0, 10)}...`);
     window.initiateSwarmConnections(data.peers, data.file_info.total_chunks, data.file_info.filename);
 });
 
-socket.on('peer_joined', (data) => {
-    logEvent(`New peer joined swarm: ${data.friendly_name} (${data.type})`);
-    if (data.type === 'seeder' && typeof createPeerConnection === 'function') {
-        createPeerConnection(data.sid, true);
+socket.on('connect_to_leecher', (data) => {
+    logEvent(`Initiating connection offer to newly joined leecher: ${data.friendly_name}`);
+    if (typeof createPeerConnection === 'function') {
+        createPeerConnection(data.leecher_sid, true);
     }
 });
 
@@ -65,7 +70,6 @@ socket.on('peer_left', (data) => {
     removePeerFromUI(data.sid);
 });
 
-// --- WEBRTC SIGNALING RELAYS ---
 socket.on('signal_offer', (data) => {
     if (typeof handleIncomingOffer === 'function') {
         handleIncomingOffer(data.from, data.offer);
@@ -84,14 +88,6 @@ socket.on('signal_ice', (data) => {
     }
 });
 
-socket.on('connect_to_leecher', (data) => {
-    logEvent(`Initiating peer connection to newly joined leecher: ${data.friendly_name}`);
-    if (typeof createPeerConnection === 'function') {
-        createPeerConnection(data.leecher_sid, true);
-    }
-});
-
-// --- CATALOG UI HELPERS ---
 function requestSwarmCatalog() {
     socket.emit('get_swarm_catalog');
 }

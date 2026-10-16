@@ -10,9 +10,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'p2p_swarm_secret_key_change_in_prod'
 
-# PostgreSQL Database Configuration (Fallback to local SQLite for local dev)
 db_url = os.environ.get('DATABASE_URL', 'sqlite:///p2p_swarm.db')
-
 if db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql+psycopg://", 1)
 elif db_url.startswith("postgresql://") and not db_url.startswith("postgresql+psycopg://"):
@@ -55,18 +53,14 @@ def load_user(user_id):
 with app.app_context():
     db.create_all()
 
-# --- IN-MEMORY SWARM STATE ---
-# Track live active socket sessions mapped to logged-in user node IDs
-# active_swarms: { file_hash: { sid: { 'username': str, 'node_id': str, 'type': 'seeder'/'leecher' } } }
 active_swarms = {}
 socket_to_user = {}
 
-# --- HTTP AUTHENTICATION ROUTES ---
 @app.route('/')
 def index():
     if not current_user.is_authenticated:
-        return render_template('login.html')  # Redirect unauthenticated users to Login/Register page
-    return render_template('index.html')      # Serve Swarm Dashboard only to logged-in users
+        return render_template('login.html')
+    return render_template('index.html')
 
 @app.route('/register', methods=['POST'])
 def register():
@@ -79,9 +73,7 @@ def register():
         flash('Username or Email already exists.', 'error')
         return redirect(url_for('index'))
 
-    # Generate permanent Node ID for user
     node_id = f"Node-{''.join(random.choices(string.ascii_uppercase + string.digits, k=4))}"
-    
     user = User(username=username, email=email, node_id=node_id)
     user.set_password(password)
     db.session.add(user)
@@ -137,8 +129,6 @@ def handle_connect():
             'friendly_name': current_user.node_id,
             'username': current_user.username
         })
-    else:
-        print(f"[Tracker] Anonymous Peer Connected: {request.sid}")
 
 @socketio.on('disconnect')
 def handle_disconnect():
@@ -147,9 +137,11 @@ def handle_disconnect():
     print(f"[Tracker] Peer Disconnected: {friendly_name}")
 
     for file_hash, swarm in list(active_swarms.items()):
-        if request.sid in swarm:
-            del swarm[request.sid]
+        if request.sid in swarm.get('peers', {}):
+            del swarm['peers'][request.sid]
             emit('peer_left', {'sid': request.sid, 'friendly_name': friendly_name}, to=file_hash)
+            if not swarm['peers']:
+                del active_swarms[file_hash]
 
     if request.sid in socket_to_user:
         del socket_to_user[request.sid]
@@ -162,7 +154,6 @@ def handle_register_file(data):
     filename = data['filename']
     total_chunks = data['total_chunks']
 
-    # Persist in Database if authenticated
     if current_user.is_authenticated:
         existing = SeededFile.query.filter_by(file_hash=file_hash, user_id=current_user.id).first()
         if not existing:
@@ -200,6 +191,26 @@ def handle_register_file(data):
 
     broadcast_swarm_catalog()
 
+@socketio.on('unregister_file')
+def handle_unregister_file(data):
+    file_hash = data.get('file_hash')
+    if file_hash in active_swarms:
+        if request.sid in active_swarms[file_hash]['peers']:
+            del active_swarms[file_hash]['peers'][request.sid]
+            leave_room(file_hash)
+            
+            # Remove from DB persistence if requested
+            if current_user.is_authenticated:
+                SeededFile.query.filter_by(file_hash=file_hash, user_id=current_user.id).delete()
+                db.session.commit()
+
+            # Clean up empty swarms
+            if not active_swarms[file_hash]['peers']:
+                del active_swarms[file_hash]
+
+    broadcast_swarm_catalog()
+    emit('file_unregistered_ack', {'file_hash': file_hash})
+
 @socketio.on('join_swarm')
 def handle_join_swarm(data):
     file_hash = data['file_hash']
@@ -214,7 +225,6 @@ def handle_join_swarm(data):
             'node_id': node_id
         }
 
-        # Collect active seeders for the joining leecher
         active_seeders = [
             {
                 'sid': sid,
@@ -225,7 +235,6 @@ def handle_join_swarm(data):
             if sid != request.sid and p_info['type'] == 'seeder'
         ]
 
-        # Send list of active seeders to the leecher
         emit('swarm_info', {
             'file_hash': file_hash,
             'file_info': {
@@ -235,7 +244,6 @@ def handle_join_swarm(data):
             'peers': active_seeders
         })
 
-        # Directly instruct existing seeders to connect to the new leecher
         for seeder in active_seeders:
             emit('connect_to_leecher', {
                 'leecher_sid': request.sid,
@@ -272,7 +280,6 @@ def build_catalog_list():
         })
     return catalog
 
-# --- WEBRTC SIGNALING RELAYS ---
 @socketio.on('signal_offer')
 def handle_offer(data):
     emit('signal_offer', {'from': request.sid, 'offer': data['offer']}, to=data['target'])
