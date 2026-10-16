@@ -12,8 +12,11 @@ app.config['SECRET_KEY'] = 'p2p_swarm_secret_key_change_in_prod'
 
 # PostgreSQL Database Configuration (Fallback to local SQLite for local dev)
 db_url = os.environ.get('DATABASE_URL', 'sqlite:///p2p_swarm.db')
+
 if db_url.startswith("postgres://"):
-    db_url = db_url.replace("postgres://", "postgresql://", 1)
+    db_url = db_url.replace("postgres://", "postgresql+psycopg://", 1)
+elif db_url.startswith("postgresql://") and not db_url.startswith("postgresql+psycopg://"):
+    db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
