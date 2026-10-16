@@ -258,9 +258,60 @@ function joinSwarmAndDownload() {
     document.getElementById('dl-progress-text').textContent = '0%';
     logEvent(`Requesting swarm telemetry for Hash: ${currentFileHash.substring(0, 10)}...`);
     
+    // Start continuous chunk requester loop (500ms interval)
+    if (chunkRetryInterval) clearInterval(chunkRetryInterval);
+    chunkRetryInterval = setInterval(() => {
+        if (targetTotalChunks > 0 && Object.keys(receivedChunks).length < targetTotalChunks) {
+            requestMissingChunks();
+        } else if (targetTotalChunks > 0 && Object.keys(receivedChunks).length >= targetTotalChunks) {
+            clearInterval(chunkRetryInterval);
+        }
+    }, 500);
+
     socket.emit('join_swarm', { file_hash: currentFileHash });
 }
 
+function handleIncomingChunkBuffer(buffer, senderSid) {
+    const header = new Int32Array(buffer.slice(0, 4));
+    const chunkIndex = header[0];
+    const chunkData = buffer.slice(4);
+
+    if (!receivedChunks.hasOwnProperty(chunkIndex)) {
+        receivedChunks[chunkIndex] = chunkData;
+
+        const downloadedCount = Object.keys(receivedChunks).length;
+        const progressPercent = Math.floor((downloadedCount / targetTotalChunks) * 100);
+
+        document.getElementById('progress-fill').style.width = `${progressPercent}%`;
+        document.getElementById('dl-progress-text').textContent = `${progressPercent}%`;
+        document.getElementById('dl-chunks-text').textContent = `${downloadedCount}/${targetTotalChunks}`;
+
+        updateLeecherProgressUI(senderSid);
+
+        // CONTINUOUS PIPELINE FIX: Immediately request the next set of missing chunks!
+        if (downloadedCount < targetTotalChunks) {
+            requestMissingChunks();
+        } else if (downloadedCount === targetTotalChunks) {
+            if (chunkRetryInterval) clearInterval(chunkRetryInterval);
+            logEvent(`SUCCESS: All ${targetTotalChunks} chunks retrieved via P2P Swarm! Assembling file...`);
+            showToast(`File download complete! Assembling...`, 'success');
+            
+            const assembledChunks = Object.keys(receivedChunks).map(k => receivedChunks[k]);
+            multiSeederStore[currentFileHash] = assembledChunks;
+            fileMetaStore[currentFileHash] = targetTotalChunks;
+            saveFileToIDB(currentFileHash, targetFilename, assembledChunks);
+
+            socket.emit('register_file', {
+                file_hash: currentFileHash,
+                filename: targetFilename,
+                total_chunks: targetTotalChunks
+            });
+
+            window.addFileToSeededListUI(currentFileHash, targetFilename, targetTotalChunks);
+            assembleAndDownloadFile();
+        }
+    }
+}
 // --- WEBRTC PIPELINE WITH RECOVERY & TELEMETRY ---
 function createPeerConnection(targetSid, isInitiator, friendlyName) {
     if (peerConnections[targetSid]) {
