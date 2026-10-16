@@ -1,4 +1,10 @@
-const socket = io();
+const socket = io({
+    transports: ['polling', 'websocket'],
+    upgrade: true,
+    reconnection: true,
+    reconnectionAttempts: 10,
+    reconnectionDelay: 1000
+});
 
 let myPeerSid = null;
 let myFriendlyName = 'Initializing...';
@@ -14,12 +20,13 @@ socket.on('connect', () => {
         .then(data => {
             if (data.logged_in) {
                 isUserLoggedIn = true;
-                currentUserId = data.user_id; // Set active user ID for IndexedDB scoping
+                if (typeof currentUserId !== 'undefined') {
+                    currentUserId = data.user_id;
+                }
                 myFriendlyName = `${data.node_id} (${data.username})`;
                 updateHeaderNodeStatus(`Connected as ${data.node_id} (${data.username})`, 'online');
             } else {
                 isUserLoggedIn = false;
-                currentUserId = null;
                 myFriendlyName = `Node-${myPeerSid.substring(0, 4).toUpperCase()}`;
                 updateHeaderNodeStatus(`Connected as ${myFriendlyName} (Guest)`, 'online');
             }
@@ -30,6 +37,11 @@ socket.on('connect', () => {
         });
 
     requestSwarmCatalog();
+});
+
+socket.on('connect_error', (error) => {
+    updateHeaderNodeStatus('Connecting to Tracker...', 'offline');
+    logEvent(`Tracker connection error: ${error.message || error}`);
 });
 
 socket.on('disconnect', () => {
@@ -65,7 +77,6 @@ socket.on('swarm_info', (data) => {
     document.getElementById('dl-filename').textContent = targetFilename;
     document.getElementById('dl-chunks-text').textContent = `0/${targetTotalChunks}`;
 
-    // Cache friendly names of active seeders
     if (data.peers && data.peers.length > 0) {
         data.peers.forEach(p => {
             peerNamesMap[p.sid] = p.friendly_name;
