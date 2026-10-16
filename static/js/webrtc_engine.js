@@ -84,7 +84,7 @@ window.reRegisterStoredFiles = function() {
     }
 };
 
-// --- SEEDER LOGIC ---
+// --- SEEDER LOGIC: Atomic File Processing Before Catalog Registration ---
 async function registerAndSeedFile() {
     const fileInput = document.getElementById('file-input');
     const seedBtn = document.getElementById('seed-btn');
@@ -96,34 +96,46 @@ async function registerAndSeedFile() {
     
     const file = fileInput.files[0];
     seedBtn.disabled = true;
-    seedBtn.textContent = "Processing File...";
-    logEvent(`Processing file "${file.name}" (${file.size} bytes)...`);
+    seedBtn.textContent = "Processing File (0%)...";
+    logEvent(`Reading file "${file.name}" (${(file.size / (1024 * 1024)).toFixed(2)} MB)...`);
     
     let fileChunks = [];
     let offset = 0;
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+    
+    // Asynchronously slice file with live progress feedback
     while (offset < file.size) {
         const slice = file.slice(offset, offset + CHUNK_SIZE);
         const buffer = await slice.arrayBuffer();
         fileChunks.push(buffer);
         offset += CHUNK_SIZE;
+        
+        const readPercent = Math.floor((fileChunks.length / totalChunks) * 100);
+        seedBtn.textContent = `Processing File (${readPercent}%)...`;
     }
     
+    // Compute SHA-256 hash after full binary read
     const fileHash = await computeSimpleHash(`${file.name}-${file.size}-${file.lastModified}`);
+    
+    // Store chunks locally in RAM and IndexedDB FIRST
     multiSeederStore[fileHash] = fileChunks;
     fileMetaStore[fileHash] = fileChunks.length;
     currentFileHash = fileHash;
 
     saveFileToIDB(fileHash, file.name, fileChunks);
 
+    // ONLY NOW publish file to tracker catalog for leechers to discover
     socket.emit('register_file', {
         file_hash: fileHash,
         filename: file.name,
         total_chunks: fileChunks.length
     });
 
+    // Reset UI
     fileInput.value = "";
     seedBtn.disabled = false;
     seedBtn.textContent = "Seed File to Swarm";
+    showToast(`File ready! Registered on Swarm Catalog.`, 'success');
 }
 
 window.addFileToSeededListUI = function(fileHash, filename, totalChunks) {
@@ -157,6 +169,7 @@ function copyMagnetLink(link) {
 function joinSwarmAndDownload() {
     const hashInput = document.getElementById('hash-input').value.trim();
     const joinBtn = document.getElementById('join-btn');
+    
     let fileHash = hashInput;
     if (hashInput.includes('fileHash=')) {
         fileHash = hashInput.split('fileHash=')[1].split('&')[0];
@@ -166,18 +179,21 @@ function joinSwarmAndDownload() {
         showToast('Please enter a valid File Hash or Link.', 'error');
         return;
     }
+
+    if (joinBtn.disabled) return;
     
     currentFileHash = fileHash;
     receivedChunks = {};
     peerChunkCounters = {};
     
     joinBtn.disabled = true;
-    joinBtn.textContent = "Searching Swarm...";
+    joinBtn.textContent = "Connecting to Swarm...";
 
     document.getElementById('download-progress-box').classList.remove('hidden');
     document.getElementById('progress-fill').style.width = '0%';
     document.getElementById('dl-progress-text').textContent = '0%';
     logEvent(`Requesting swarm telemetry for Hash: ${currentFileHash.substring(0, 10)}...`);
+    
     socket.emit('join_swarm', { file_hash: currentFileHash });
 }
 
@@ -212,9 +228,14 @@ window.initiateSwarmConnections = function(peers, totalChunks, filename) {
     }, 500);
 };
 
-// --- WEBRTC CORE ---
+// --- WEBRTC PIPELINE ---
 function createPeerConnection(targetSid, isInitiator) {
-    if (peerConnections[targetSid]) return peerConnections[targetSid];
+    if (peerConnections[targetSid]) {
+        const existingState = peerConnections[targetSid].connectionState;
+        if (existingState === 'connected' || existingState === 'connecting') {
+            return peerConnections[targetSid];
+        }
+    }
 
     const pc = new RTCPeerConnection(rtcConfig);
     peerConnections[targetSid] = pc;
@@ -224,6 +245,10 @@ function createPeerConnection(targetSid, isInitiator) {
         if (event.candidate) {
             socket.emit('signal_ice', { target: targetSid, candidate: event.candidate });
         }
+    };
+
+    pc.onconnectionstatechange = () => {
+        logEvent(`Peer Connection State with ${targetSid.substring(0, 8)}: ${pc.connectionState}`);
     };
 
     if (isInitiator) {
@@ -237,6 +262,7 @@ function createPeerConnection(targetSid, isInitiator) {
             .catch(err => logEvent(`Error creating offer: ${err}`));
     } else {
         pc.ondatachannel = (event) => {
+            logEvent(`Incoming DataChannel received from Peer: ${targetSid.substring(0, 8)}`);
             const dc = event.channel;
             setupDataChannelEvents(dc, targetSid);
             dataChannels[targetSid] = dc;
@@ -251,6 +277,7 @@ function setupDataChannelEvents(dc, targetSid) {
     
     dc.onopen = () => {
         logEvent(`P2P DataChannel OPENED with Peer: ${targetSid.substring(0, 8)}...`);
+        showToast('P2P Direct Channel Opened!', 'success');
         requestMissingChunks();
     };
 
@@ -284,6 +311,7 @@ function updateSeederProgressUI(targetSid, fileHash) {
     }
 }
 
+// --- SIGNALING HANDLERS ---
 window.handleIncomingOffer = async function(fromSid, offer) {
     const pc = createPeerConnection(fromSid, false);
     try {
@@ -333,6 +361,7 @@ window.handleIncomingICE = async function(fromSid, candidate) {
     }
 };
 
+// --- CHUNK TRANSFER ---
 function requestMissingChunks() {
     const openPeerSids = Object.keys(dataChannels).filter(sid => dataChannels[sid] && dataChannels[sid].readyState === 'open');
     if (openPeerSids.length === 0) return;
