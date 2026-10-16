@@ -1,9 +1,12 @@
 const socket = io({
     transports: ['polling', 'websocket'],
     upgrade: true,
+    secure: true,
     reconnection: true,
-    reconnectionAttempts: 10,
-    reconnectionDelay: 1000
+    reconnectionAttempts: 20,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
+    timeout: 20000
 });
 
 let myPeerSid = null;
