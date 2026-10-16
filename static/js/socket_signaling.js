@@ -1,4 +1,3 @@
-// Initialize Socket.IO connection
 const socket = io("https://p2p-swarm-app.onrender.com/");
 
 let myFriendlyName = "Connecting...";
@@ -10,6 +9,15 @@ const logWindow = document.getElementById('log-window');
 const peerListUI = document.getElementById('peer-list');
 const activeLeechersCountElem = document.getElementById('active-leechers-count');
 
+function showToast(message, type = 'info') {
+    const container = document.getElementById('toast-container');
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.textContent = message;
+    container.appendChild(toast);
+    setTimeout(() => toast.remove(), 3500);
+}
+
 function logEvent(message) {
     const time = new Date().toLocaleTimeString();
     const logItem = document.createElement('div');
@@ -18,10 +26,14 @@ function logEvent(message) {
     logWindow.scrollTop = logWindow.scrollHeight;
 }
 
-// Socket Connection Events
+// Socket Events
 socket.on('connect', () => {
     logEvent('Successfully connected to signaling server tracker.');
+    showToast('Connected to Central Tracker!', 'success');
     socket.emit('get_swarm_catalog');
+    if (window.reRegisterStoredFiles) {
+        window.reRegisterStoredFiles();
+    }
 });
 
 socket.on('assigned_peer_name', (data) => {
@@ -34,13 +46,13 @@ socket.on('disconnect', () => {
     nodeStatus.textContent = 'Disconnected from Tracker';
     nodeStatus.className = 'status-offline';
     logEvent('Lost connection to signaling server.');
+    showToast('Disconnected from Tracker', 'error');
 });
 
-// Mobile Page Visibility / Re-connection Listener
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
         if (!socket.connected) {
-            logEvent('Mobile app re-focused. Reconnecting to tracker...');
+            logEvent('App re-focused. Reconnecting to tracker...');
             socket.connect();
         } else {
             socket.emit('get_swarm_catalog');
@@ -48,13 +60,14 @@ document.addEventListener('visibilitychange', () => {
     }
 });
 
-// Swarm Catalog Handlers
+// Swarm Catalog
 socket.on('catalog_update', (data) => {
     activeSwarmCatalog = data.catalog;
     renderSwarmCatalog(activeSwarmCatalog);
 });
 
 function requestSwarmCatalog() {
+    showToast('Refreshing catalog...', 'info');
     socket.emit('get_swarm_catalog');
 }
 
@@ -73,10 +86,10 @@ function renderSwarmCatalog(catalogList) {
             <td><strong>${item.filename}</strong></td>
             <td><code>${item.file_hash.substring(0, 10)}...</code></td>
             <td>${item.total_chunks} (${(item.total_chunks * 16 / 1024).toFixed(1)} MB)</td>
-            <td style="color:#4ade80;">${item.seeders}</td>
-            <td style="color:#f87171;">${item.leechers}</td>
+            <td style="color:#4ade80; font-weight:bold;">${item.seeders}</td>
+            <td style="color:#f87171; font-weight:bold;">${item.leechers}</td>
             <td>
-                <button class="btn-small" onclick="selectFileFromCatalog('${item.file_hash}')">Download</button>
+                <button class="btn-small" onclick="selectFileFromCatalog('${item.file_hash}', '${item.filename}', ${item.total_chunks})">Download</button>
             </td>
         `;
         catalogTbody.appendChild(tr);
@@ -89,14 +102,16 @@ function filterSwarmCatalog() {
     renderSwarmCatalog(filtered);
 }
 
-function selectFileFromCatalog(fileHash) {
+function selectFileFromCatalog(fileHash, filename, totalChunks) {
     document.getElementById('hash-input').value = fileHash;
+    showToast(`Joining swarm for ${filename}...`, 'info');
     joinSwarmAndDownload();
 }
 
-// Tracker Events
+// Tracker Event Listeners
 socket.on('file_registered_ack', (data) => {
     logEvent(`File "${data.filename}" registered on tracker.`);
+    showToast(`File "${data.filename}" is now seeding!`, 'success');
     window.addFileToSeededListUI(data.file_hash, data.filename, data.total_chunks);
 });
 
@@ -118,15 +133,14 @@ socket.on('peer_left', (data) => {
 
 socket.on('swarm_error', (data) => {
     logEvent(`Swarm Error: ${data.message}`);
-    alert(data.message);
+    showToast(data.message, 'error');
 });
 
-// WebRTC Signaling Relays
+// WebRTC Signaling
 socket.on('signal_offer', (data) => window.handleIncomingOffer(data.from, data.offer));
 socket.on('signal_answer', (data) => window.handleIncomingAnswer(data.from, data.answer));
 socket.on('signal_ice', (data) => window.handleIncomingICE(data.from, data.candidate));
 
-// Telemetry UI Helpers
 function updatePeerListUI(peers) {
     peerListUI.innerHTML = '';
     if (peers.length === 0) {
@@ -172,7 +186,6 @@ function updateActiveLeechersCount() {
     activeLeechersCountElem.textContent = peerItems.length.toString();
 }
 
-// Auto-check URL Magnet Hash on Load
 window.addEventListener('DOMContentLoaded', () => {
     const urlParams = new URLSearchParams(window.location.hash.substring(1));
     const fileHash = urlParams.get('fileHash');

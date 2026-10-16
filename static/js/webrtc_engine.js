@@ -17,11 +17,11 @@ const rtcConfig = {
 };
 
 const CHUNK_SIZE = 16384; 
-// # multiSeederStore: { file_hash: [ ArrayBuffers ] }
+
 let multiSeederStore = {};
+let fileMetaStore = {}; 
 let mySeededFilesMeta = [];
 
-let localFileChunks = [];  
 let receivedChunks = {};   
 let peerConnections = {}; 
 let dataChannels = {};    
@@ -32,14 +32,71 @@ let currentFileHash = '';
 let chunkRetryInterval = null;
 let peerChunkCounters = {};
 
-// --- SEEDER LOGIC: Multi-File Support ---
+// --- INDEXEDDB STORAGE SYSTEM ---
+let db;
+const dbRequest = indexedDB.open("SwarmP2PStorage", 1);
+
+dbRequest.onupgradeneeded = function(e) {
+    db = e.target.result;
+    if (!db.objectStoreNames.contains("seeded_files")) {
+        db.createObjectStore("seeded_files", { keyPath: "fileHash" });
+    }
+};
+
+dbRequest.onsuccess = function(e) {
+    db = e.target.result;
+    loadStoredFilesFromIDB();
+};
+
+function saveFileToIDB(fileHash, filename, chunks) {
+    if (!db) return;
+    const tx = db.transaction("seeded_files", "readwrite");
+    const store = tx.objectStore("seeded_files");
+    store.put({ fileHash, filename, chunks });
+}
+
+function loadStoredFilesFromIDB() {
+    if (!db) return;
+    const tx = db.transaction("seeded_files", "readonly");
+    const store = tx.objectStore("seeded_files");
+    const req = store.getAll();
+
+    req.onsuccess = function() {
+        const records = req.result || [];
+        records.forEach(rec => {
+            multiSeederStore[rec.fileHash] = rec.chunks;
+            fileMetaStore[rec.fileHash] = rec.chunks.length;
+            window.addFileToSeededListUI(rec.fileHash, rec.filename, rec.chunks.length);
+        });
+        window.reRegisterStoredFiles();
+    };
+}
+
+window.reRegisterStoredFiles = function() {
+    if (Object.keys(multiSeederStore).length > 0 && socket && socket.connected) {
+        mySeededFilesMeta.forEach(item => {
+            socket.emit('register_file', {
+                file_hash: item.hash,
+                filename: item.name,
+                total_chunks: item.chunks
+            });
+        });
+    }
+};
+
+// --- SEEDER LOGIC ---
 async function registerAndSeedFile() {
     const fileInput = document.getElementById('file-input');
+    const seedBtn = document.getElementById('seed-btn');
+    
     if (!fileInput.files.length) {
-        alert('Please select a file to seed.');
+        showToast('Please select a file to seed.', 'error');
         return;
     }
+    
     const file = fileInput.files[0];
+    seedBtn.disabled = true;
+    seedBtn.textContent = "Processing File...";
     logEvent(`Processing file "${file.name}" (${file.size} bytes)...`);
     
     let fileChunks = [];
@@ -53,16 +110,20 @@ async function registerAndSeedFile() {
     
     const fileHash = await computeSimpleHash(`${file.name}-${file.size}-${file.lastModified}`);
     multiSeederStore[fileHash] = fileChunks;
-    
-    // Default active buffer
-    localFileChunks = fileChunks;
+    fileMetaStore[fileHash] = fileChunks.length;
     currentFileHash = fileHash;
+
+    saveFileToIDB(fileHash, file.name, fileChunks);
 
     socket.emit('register_file', {
         file_hash: fileHash,
         filename: file.name,
         total_chunks: fileChunks.length
     });
+
+    fileInput.value = "";
+    seedBtn.disabled = false;
+    seedBtn.textContent = "Seed File to Swarm";
 }
 
 window.addFileToSeededListUI = function(fileHash, filename, totalChunks) {
@@ -89,19 +150,20 @@ window.addFileToSeededListUI = function(fileHash, filename, totalChunks) {
 
 function copyMagnetLink(link) {
     navigator.clipboard.writeText(link);
-    alert('Shareable magnet link copied to clipboard!');
+    showToast('Magnet link copied to clipboard!', 'success');
 }
 
 // --- LEECHER LOGIC ---
 function joinSwarmAndDownload() {
     const hashInput = document.getElementById('hash-input').value.trim();
+    const joinBtn = document.getElementById('join-btn');
     let fileHash = hashInput;
     if (hashInput.includes('fileHash=')) {
         fileHash = hashInput.split('fileHash=')[1].split('&')[0];
     }
 
     if (!fileHash) {
-        alert('Please enter a valid File Hash or Link.');
+        showToast('Please enter a valid File Hash or Link.', 'error');
         return;
     }
     
@@ -109,6 +171,9 @@ function joinSwarmAndDownload() {
     receivedChunks = {};
     peerChunkCounters = {};
     
+    joinBtn.disabled = true;
+    joinBtn.textContent = "Searching Swarm...";
+
     document.getElementById('download-progress-box').classList.remove('hidden');
     document.getElementById('progress-fill').style.width = '0%';
     document.getElementById('dl-progress-text').textContent = '0%';
@@ -117,15 +182,24 @@ function joinSwarmAndDownload() {
 }
 
 window.initiateSwarmConnections = function(peers, totalChunks, filename) {
+    const joinBtn = document.getElementById('join-btn');
+    joinBtn.disabled = false;
+    joinBtn.textContent = "Join Swarm & Download";
+
     targetTotalChunks = totalChunks;
     targetFilename = filename;
+    fileMetaStore[currentFileHash] = totalChunks;
+
     document.getElementById('dl-filename').textContent = filename;
     document.getElementById('dl-chunks-text').textContent = `0/${totalChunks}`;
+    
     if (peers.length === 0) {
         logEvent('Warning: No seeders currently available in swarm.');
+        showToast('No active seeders found in swarm.', 'error');
         return;
     }
     
+    showToast(`Connecting to ${peers.length} active seeder(s)...`, 'info');
     peers.forEach(peer => createPeerConnection(peer.sid, true));
 
     if (chunkRetryInterval) clearInterval(chunkRetryInterval);
@@ -138,7 +212,7 @@ window.initiateSwarmConnections = function(peers, totalChunks, filename) {
     }, 500);
 };
 
-// --- WEBRTC PIPELINE ---
+// --- WEBRTC CORE ---
 function createPeerConnection(targetSid, isInitiator) {
     if (peerConnections[targetSid]) return peerConnections[targetSid];
 
@@ -185,7 +259,7 @@ function setupDataChannelEvents(dc, targetSid) {
             const msg = JSON.parse(event.data);
             if (msg.type === 'request_chunk') {
                 sendChunkToPeer(targetSid, msg.chunkIndex, msg.fileHash);
-                updateSeederProgressUI(targetSid);
+                updateSeederProgressUI(targetSid, msg.fileHash);
             }
         } else {
             handleIncomingChunkBuffer(event.data, targetSid);
@@ -196,11 +270,11 @@ function setupDataChannelEvents(dc, targetSid) {
     dc.onerror = (err) => logEvent(`DataChannel Error: ${err}`);
 }
 
-function updateSeederProgressUI(targetSid) {
+function updateSeederProgressUI(targetSid, fileHash) {
     peerChunkCounters[targetSid] = (peerChunkCounters[targetSid] || 0) + 1;
     const count = peerChunkCounters[targetSid];
-    const total = targetTotalChunks || 1;
-    const percentage = ((count / total) * 100).toFixed(1);
+    const total = fileMetaStore[fileHash] || targetTotalChunks || 1;
+    const percentage = Math.min(100, ((count / total) * 100)).toFixed(1);
 
     const countElem = document.getElementById(`chunk-count-${targetSid}`);
     const pctElem = document.getElementById(`chunk-pct-${targetSid}`);
@@ -210,7 +284,6 @@ function updateSeederProgressUI(targetSid) {
     }
 }
 
-// --- SIGNALING HANDLERS ---
 window.handleIncomingOffer = async function(fromSid, offer) {
     const pc = createPeerConnection(fromSid, false);
     try {
@@ -260,7 +333,6 @@ window.handleIncomingICE = async function(fromSid, candidate) {
     }
 };
 
-// --- CHUNK TRANSFER ---
 function requestMissingChunks() {
     const openPeerSids = Object.keys(dataChannels).filter(sid => dataChannels[sid] && dataChannels[sid].readyState === 'open');
     if (openPeerSids.length === 0) return;
@@ -280,9 +352,9 @@ function requestMissingChunks() {
 
 function sendChunkToPeer(targetSid, chunkIndex, requestedHash) {
     const dc = dataChannels[targetSid];
-    const sourceChunks = multiSeederStore[requestedHash] || localFileChunks;
+    const sourceChunks = multiSeederStore[requestedHash];
     
-    if (dc && dc.readyState === 'open' && sourceChunks[chunkIndex]) {
+    if (dc && dc.readyState === 'open' && sourceChunks && sourceChunks[chunkIndex]) {
         const chunkBuffer = sourceChunks[chunkIndex];
         const header = new Int32Array([chunkIndex]);
         const packet = new Uint8Array(header.byteLength + chunkBuffer.byteLength);
@@ -308,7 +380,7 @@ function handleIncomingChunkBuffer(buffer, senderSid) {
 
         peerChunkCounters[senderSid] = (peerChunkCounters[senderSid] || 0) + 1;
         const peerChunksReceived = peerChunkCounters[senderSid];
-        const peerPercentage = ((peerChunksReceived / targetTotalChunks) * 100).toFixed(1);
+        const peerPercentage = Math.min(100, ((peerChunksReceived / targetTotalChunks) * 100)).toFixed(1);
         
         const countElem = document.getElementById(`chunk-count-${senderSid}`);
         const pctElem = document.getElementById(`chunk-pct-${senderSid}`);
@@ -327,9 +399,13 @@ function handleIncomingChunkBuffer(buffer, senderSid) {
         if (downloadedCount === targetTotalChunks) {
             if (chunkRetryInterval) clearInterval(chunkRetryInterval);
             logEvent(`SUCCESS: All ${targetTotalChunks} chunks retrieved via P2P Swarm! Assembling file...`);
+            showToast(`File download complete! Assembling...`, 'success');
             
-            multiSeederStore[currentFileHash] = Object.keys(receivedChunks).map(k => receivedChunks[k]);
-            
+            const assembledChunks = Object.keys(receivedChunks).map(k => receivedChunks[k]);
+            multiSeederStore[currentFileHash] = assembledChunks;
+            fileMetaStore[currentFileHash] = targetTotalChunks;
+            saveFileToIDB(currentFileHash, targetFilename, assembledChunks);
+
             socket.emit('register_file', {
                 file_hash: currentFileHash,
                 filename: targetFilename,

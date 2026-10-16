@@ -81,6 +81,10 @@ button {
 button:hover {
     background: #0369a1;
 }
+button:disabled {
+    background: #475569;
+    cursor: not-allowed;
+}
 .btn-small {
     padding: 0.35rem 0.6rem;
     font-size: 0.8rem;
@@ -164,4 +168,27 @@ button:hover {
     font-size: 0.8rem;
     color: #38bdf8;
     border-radius: 4px;
+}
+/* Toast Notifications */
+#toast-container {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 9999;
+}
+.toast {
+    background: #0284c7;
+    color: #fff;
+    padding: 12px 20px;
+    border-radius: 6px;
+    margin-bottom: 10px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    font-weight: bold;
+    animation: fadeIn 0.3s ease;
+}
+.toast-success { background: #10b981; }
+.toast-error { background: #ef4444; }
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
 }

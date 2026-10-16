@@ -7,10 +7,8 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'p2p_swarm_secret'
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-# Memory Stores
-# files_registry: { file_hash: { 'filename': str, 'total_chunks': int, 'peers': { sid: { 'type': str, 'has_chunks': [] } } } }
+# In-Memory Swarm Registry
 files_registry = {}
-# peer_display_names: { sid: "Node-A41F" }
 peer_names = {}
 
 def generate_friendly_name():
@@ -33,13 +31,15 @@ def handle_disconnect():
     friendly_name = peer_names.get(request.sid, request.sid[:8])
     print(f"[Tracker] Peer disconnected: {friendly_name}")
     
-    for file_hash, file_info in files_registry.items():
+    for file_hash, file_info in list(files_registry.items()):
         if request.sid in file_info['peers']:
             del file_info['peers'][request.sid]
             emit('peer_left', {'sid': request.sid, 'friendly_name': friendly_name}, to=file_hash)
             
     if request.sid in peer_names:
         del peer_names[request.sid]
+        
+    broadcast_swarm_catalog()
 
 @socketio.on('register_file')
 def handle_register_file(data):
@@ -70,7 +70,6 @@ def handle_register_file(data):
         'total_chunks': total_chunks
     })
     
-    # Broadcast catalog update to all peers
     broadcast_swarm_catalog()
 
 @socketio.on('join_swarm')
@@ -142,7 +141,7 @@ def build_catalog_list():
         })
     return catalog
 
-# Signaling Relays
+# WebRTC Signaling Relays
 @socketio.on('signal_offer')
 def handle_offer(data):
     emit('signal_offer', {'from': request.sid, 'offer': data['offer']}, to=data['target'])

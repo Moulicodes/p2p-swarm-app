@@ -8,6 +8,8 @@
     <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
 </head>
 <body>
+    <div id="toast-container"></div>
+
     <div class="container">
         <header>
             <h1>Hybrid P2P Swarm Node</h1>
@@ -20,7 +22,7 @@
                 <h2>Discover & Search Swarm Catalog</h2>
                 <div class="input-group search-bar">
                     <input type="text" id="search-input" placeholder="Type filename to search active swarms..." onkeyup="filterSwarmCatalog()">
-                    <button onclick="requestSwarmCatalog()">Refresh Catalog</button>
+                    <button id="refresh-catalog-btn" onclick="requestSwarmCatalog()">Refresh Catalog</button>
                 </div>
                 <div class="catalog-table-container">
                     <table class="data-table">
@@ -48,7 +50,7 @@
                     <input type="file" id="file-input">
                     <button id="seed-btn" onclick="registerAndSeedFile()">Seed File to Swarm</button>
                 </div>
-                <h3 style="margin-top: 1rem; font-size: 0.95rem; color: #38bdf8;">Your Active Seeded Files</h3>
+                <h3 style="margin-top: 1rem; font-size: 0.95rem; color: #38bdf8;">Your Active Seeded Files (Saved Locally)</h3>
                 <div class="seeded-table-container">
                     <table class="data-table">
                         <thead>
@@ -86,7 +88,7 @@
                 <h2>Active Swarm Telemetry & Node Performance</h2>
                 <div class="telemetry-grid">
                     <div>
-                        <h3>Connected Peers & Transfer Breakdown (<span id="active-leechers-count">0</span> Active Leechers)</h3>
+                        <h3>Connected Peers (<span id="active-leechers-count">0</span> Active)</h3>
                         <ul id="peer-list" class="peer-list">
                             <li class="empty-msg">No active swarm connections.</li>
                         </ul>
