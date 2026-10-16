@@ -74,6 +74,7 @@ function loadStoredFilesFromIDB() {
 
     req.onsuccess = function() {
         const records = req.result || [];
+        mySeededFilesMeta = [];
         records.forEach(rec => {
             multiSeederStore[rec.fileHash] = rec.chunks;
             fileMetaStore[rec.fileHash] = rec.chunks.length;
@@ -81,7 +82,6 @@ function loadStoredFilesFromIDB() {
             if (!mySeededFilesMeta.some(f => f.hash === rec.fileHash)) {
                 mySeededFilesMeta.push({ hash: rec.fileHash, name: rec.filename, chunks: rec.chunks.length });
             }
-            window.addFileToSeededListUI(rec.fileHash, rec.filename, rec.chunks.length);
 
             if (socket && socket.connected) {
                 socket.emit('register_file', {
@@ -91,6 +91,7 @@ function loadStoredFilesFromIDB() {
                 });
             }
         });
+        window.renderSeededFilesTableUI();
     };
 }
 
@@ -163,6 +164,8 @@ async function registerAndSeedFile() {
         filename: file.name,
         total_chunks: fileChunks.length
     });
+
+    window.addFileToSeededListUI(fileHash, file.name, fileChunks.length);
 
     fileInput.value = "";
     seedBtn.disabled = false;
@@ -240,42 +243,11 @@ function joinSwarmAndDownload() {
     socket.emit('join_swarm', { file_hash: currentFileHash });
 }
 
-window.initiateSwarmConnections = function(peers, totalChunks, filename) {
-    const joinBtn = document.getElementById('join-btn');
-    joinBtn.disabled = false;
-    joinBtn.textContent = "Join Swarm & Download";
-
-    targetTotalChunks = totalChunks;
-    targetFilename = filename;
-    fileMetaStore[currentFileHash] = totalChunks;
-
-    document.getElementById('dl-filename').textContent = filename;
-    document.getElementById('dl-chunks-text').textContent = `0/${totalChunks}`;
-    
-    if (peers.length === 0) {
-        logEvent('Warning: No seeders currently available in swarm.');
-        showToast('No active seeders found in swarm.', 'error');
-        return;
-    }
-    
-    showToast(`Connecting to ${peers.length} active seeder(s)...`, 'info');
-    peers.forEach(peer => createPeerConnection(peer.sid, true));
-
-    if (chunkRetryInterval) clearInterval(chunkRetryInterval);
-    chunkRetryInterval = setInterval(() => {
-        if (Object.keys(receivedChunks).length < targetTotalChunks) {
-            requestMissingChunks();
-        } else {
-            clearInterval(chunkRetryInterval);
-        }
-    }, 500);
-};
-
-// --- WEBRTC PIPELINE ---
+// --- WEBRTC PIPELINE WITH ASYMMETRIC OFFER NEGOTIATION ---
 function createPeerConnection(targetSid, isInitiator) {
     if (peerConnections[targetSid]) {
-        const existingState = peerConnections[targetSid].connectionState;
-        if (existingState === 'connected' || existingState === 'connecting') {
+        const state = peerConnections[targetSid].signalingState;
+        if (state !== 'closed') {
             return peerConnections[targetSid];
         }
     }
@@ -342,7 +314,15 @@ function setupDataChannelEvents(dc, targetSid) {
 window.handleIncomingOffer = async function(fromSid, offer) {
     const pc = createPeerConnection(fromSid, false);
     try {
-        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        if (pc.signalingState !== "stable") {
+            await Promise.all([
+                pc.setLocalDescription({type: "rollback"}),
+                pc.setRemoteDescription(new RTCSessionDescription(offer))
+            ]);
+        } else {
+            await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        }
+
         if (iceCandidatesQueue[fromSid]) {
             while (iceCandidatesQueue[fromSid].length > 0) {
                 const cand = iceCandidatesQueue[fromSid].shift();
@@ -353,13 +333,13 @@ window.handleIncomingOffer = async function(fromSid, offer) {
         await pc.setLocalDescription(answer);
         socket.emit('signal_answer', { target: fromSid, answer: pc.localDescription });
     } catch (e) {
-        logEvent(`Error handling offer: ${e}`);
+        logEvent(`Error handling incoming offer: ${e.message}`);
     }
 };
 
 window.handleIncomingAnswer = async function(fromSid, answer) {
     const pc = peerConnections[fromSid];
-    if (pc) {
+    if (pc && pc.signalingState === "have-local-offer") {
         try {
             await pc.setRemoteDescription(new RTCSessionDescription(answer));
             if (iceCandidatesQueue[fromSid]) {
@@ -369,7 +349,7 @@ window.handleIncomingAnswer = async function(fromSid, answer) {
                 }
             }
         } catch (e) {
-            logEvent(`Error setting answer: ${e}`);
+            logEvent(`Error setting answer: ${e.message}`);
         }
     }
 };
@@ -380,7 +360,7 @@ window.handleIncomingICE = async function(fromSid, candidate) {
         try {
             await pc.addIceCandidate(new RTCIceCandidate(candidate));
         } catch (e) {
-            logEvent(`Error adding ICE: ${e}`);
+            logEvent(`Error adding ICE: ${e.message}`);
         }
     } else {
         if (!iceCandidatesQueue[fromSid]) iceCandidatesQueue[fromSid] = [];
@@ -468,6 +448,8 @@ function handleIncomingChunkBuffer(buffer, senderSid) {
                 filename: targetFilename,
                 total_chunks: targetTotalChunks
             });
+
+            window.addFileToSeededListUI(currentFileHash, targetFilename, targetTotalChunks);
             assembleAndDownloadFile();
         }
     }

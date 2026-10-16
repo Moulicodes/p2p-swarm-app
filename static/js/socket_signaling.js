@@ -55,7 +55,20 @@ socket.on('file_unregistered_ack', (data) => {
 
 socket.on('swarm_info', (data) => {
     logEvent(`Swarm metadata received for hash: ${data.file_hash.substring(0, 10)}...`);
-    window.initiateSwarmConnections(data.peers, data.file_info.total_chunks, data.file_info.filename);
+    targetTotalChunks = data.file_info.total_chunks;
+    targetFilename = data.file_info.filename;
+    fileMetaStore[currentFileHash] = targetTotalChunks;
+
+    document.getElementById('dl-filename').textContent = targetFilename;
+    document.getElementById('dl-chunks-text').textContent = `0/${targetTotalChunks}`;
+    
+    if (data.peers.length === 0) {
+        logEvent('Warning: No seeders currently available in swarm.');
+        showToast('No active seeders found in swarm.', 'error');
+        return;
+    }
+    
+    showToast(`Waiting for ${data.peers.length} active seeder(s) to connect...`, 'info');
 });
 
 socket.on('connect_to_leecher', (data) => {

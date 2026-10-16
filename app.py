@@ -199,12 +199,10 @@ def handle_unregister_file(data):
             del active_swarms[file_hash]['peers'][request.sid]
             leave_room(file_hash)
             
-            # Remove from DB persistence if requested
             if current_user.is_authenticated:
                 SeededFile.query.filter_by(file_hash=file_hash, user_id=current_user.id).delete()
                 db.session.commit()
 
-            # Clean up empty swarms
             if not active_swarms[file_hash]['peers']:
                 del active_swarms[file_hash]
 
@@ -235,6 +233,7 @@ def handle_join_swarm(data):
             if sid != request.sid and p_info['type'] == 'seeder'
         ]
 
+        # Inform the leecher of metadata
         emit('swarm_info', {
             'file_hash': file_hash,
             'file_info': {
@@ -244,6 +243,7 @@ def handle_join_swarm(data):
             'peers': active_seeders
         })
 
+        # Directly tell active seeders to initiate WebRTC offers to the leecher
         for seeder in active_seeders:
             emit('connect_to_leecher', {
                 'leecher_sid': request.sid,
