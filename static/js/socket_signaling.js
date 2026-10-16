@@ -84,6 +84,13 @@ socket.on('signal_ice', (data) => {
     }
 });
 
+socket.on('connect_to_leecher', (data) => {
+    logEvent(`Initiating peer connection to newly joined leecher: ${data.friendly_name}`);
+    if (typeof createPeerConnection === 'function') {
+        createPeerConnection(data.leecher_sid, true);
+    }
+});
+
 // --- CATALOG UI HELPERS ---
 function requestSwarmCatalog() {
     socket.emit('get_swarm_catalog');

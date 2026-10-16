@@ -214,30 +214,33 @@ def handle_join_swarm(data):
             'node_id': node_id
         }
 
-        active_peers = [
+        # Collect active seeders for the joining leecher
+        active_seeders = [
             {
                 'sid': sid,
                 'friendly_name': p_info['node_id'],
                 'type': p_info['type']
             }
             for sid, p_info in active_swarms[file_hash]['peers'].items()
-            if sid != request.sid
+            if sid != request.sid and p_info['type'] == 'seeder'
         ]
 
+        # Send list of active seeders to the leecher
         emit('swarm_info', {
             'file_hash': file_hash,
             'file_info': {
                 'filename': active_swarms[file_hash]['filename'],
                 'total_chunks': active_swarms[file_hash]['total_chunks']
             },
-            'peers': active_peers
+            'peers': active_seeders
         })
 
-        emit('peer_joined', {
-            'sid': request.sid,
-            'friendly_name': node_id,
-            'type': 'leecher'
-        }, to=file_hash, include_self=False)
+        # Directly instruct existing seeders to connect to the new leecher
+        for seeder in active_seeders:
+            emit('connect_to_leecher', {
+                'leecher_sid': request.sid,
+                'friendly_name': node_id
+            }, to=seeder['sid'])
 
         broadcast_swarm_catalog()
     else:
