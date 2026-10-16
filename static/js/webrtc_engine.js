@@ -30,7 +30,10 @@ let targetTotalChunks = 0;
 let targetFilename = '';
 let currentFileHash = '';
 let chunkRetryInterval = null;
-let peerChunkCounters = {};
+
+// Telemetry sets per peer
+let peerServedChunkSets = {};
+let peerReceivedChunkSets = {};
 
 // --- INDEXEDDB STORAGE SYSTEM ---
 let db;
@@ -84,6 +87,16 @@ window.reRegisterStoredFiles = function() {
     }
 };
 
+function clearLocalStorageAndReload() {
+    if (confirm("Are you sure you want to clear locally saved files on this node?")) {
+        const req = indexedDB.deleteDatabase("SwarmP2PStorage");
+        req.onsuccess = function() {
+            showToast("Local P2P storage cleared!", "success");
+            setTimeout(() => location.reload(), 500);
+        };
+    }
+}
+
 // --- SEEDER LOGIC: Atomic File Processing Before Catalog Registration ---
 async function registerAndSeedFile() {
     const fileInput = document.getElementById('file-input');
@@ -103,7 +116,6 @@ async function registerAndSeedFile() {
     let offset = 0;
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
     
-    // Asynchronously slice file with live progress feedback
     while (offset < file.size) {
         const slice = file.slice(offset, offset + CHUNK_SIZE);
         const buffer = await slice.arrayBuffer();
@@ -114,24 +126,20 @@ async function registerAndSeedFile() {
         seedBtn.textContent = `Processing File (${readPercent}%)...`;
     }
     
-    // Compute SHA-256 hash after full binary read
     const fileHash = await computeSimpleHash(`${file.name}-${file.size}-${file.lastModified}`);
     
-    // Store chunks locally in RAM and IndexedDB FIRST
     multiSeederStore[fileHash] = fileChunks;
     fileMetaStore[fileHash] = fileChunks.length;
     currentFileHash = fileHash;
 
     saveFileToIDB(fileHash, file.name, fileChunks);
 
-    // ONLY NOW publish file to tracker catalog for leechers to discover
     socket.emit('register_file', {
         file_hash: fileHash,
         filename: file.name,
         total_chunks: fileChunks.length
     });
 
-    // Reset UI
     fileInput.value = "";
     seedBtn.disabled = false;
     seedBtn.textContent = "Seed File to Swarm";
@@ -184,7 +192,8 @@ function joinSwarmAndDownload() {
     
     currentFileHash = fileHash;
     receivedChunks = {};
-    peerChunkCounters = {};
+    peerServedChunkSets = {};
+    peerReceivedChunkSets = {};
     
     joinBtn.disabled = true;
     joinBtn.textContent = "Connecting to Swarm...";
@@ -286,7 +295,7 @@ function setupDataChannelEvents(dc, targetSid) {
             const msg = JSON.parse(event.data);
             if (msg.type === 'request_chunk') {
                 sendChunkToPeer(targetSid, msg.chunkIndex, msg.fileHash);
-                updateSeederProgressUI(targetSid, msg.fileHash);
+                updateSeederProgressUI(targetSid, msg.fileHash, msg.chunkIndex);
             }
         } else {
             handleIncomingChunkBuffer(event.data, targetSid);
@@ -297,16 +306,21 @@ function setupDataChannelEvents(dc, targetSid) {
     dc.onerror = (err) => logEvent(`DataChannel Error: ${err}`);
 }
 
-function updateSeederProgressUI(targetSid, fileHash) {
-    peerChunkCounters[targetSid] = (peerChunkCounters[targetSid] || 0) + 1;
-    const count = peerChunkCounters[targetSid];
+function updateSeederProgressUI(targetSid, fileHash, chunkIndex) {
+    if (!peerServedChunkSets[targetSid]) {
+        peerServedChunkSets[targetSid] = new Set();
+    }
+    
+    peerServedChunkSets[targetSid].add(chunkIndex);
+    
+    const uniqueCount = peerServedChunkSets[targetSid].size;
     const total = fileMetaStore[fileHash] || targetTotalChunks || 1;
-    const percentage = Math.min(100, ((count / total) * 100)).toFixed(1);
+    const percentage = Math.min(100, ((uniqueCount / total) * 100)).toFixed(1);
 
     const countElem = document.getElementById(`chunk-count-${targetSid}`);
     const pctElem = document.getElementById(`chunk-pct-${targetSid}`);
     if (countElem && pctElem) {
-        countElem.textContent = count;
+        countElem.textContent = uniqueCount;
         pctElem.textContent = `${percentage}%`;
     }
 }
@@ -361,22 +375,35 @@ window.handleIncomingICE = async function(fromSid, candidate) {
     }
 };
 
-// --- CHUNK TRANSFER ---
+// --- CHUNK TRANSFER WITH TRUE PARALLEL SWARM BALANCING ---
 function requestMissingChunks() {
-    const openPeerSids = Object.keys(dataChannels).filter(sid => dataChannels[sid] && dataChannels[sid].readyState === 'open');
+    const openPeerSids = Object.keys(dataChannels).filter(
+        sid => dataChannels[sid] && dataChannels[sid].readyState === 'open'
+    );
+    
     if (openPeerSids.length === 0) return;
 
-    let peerIndex = 0;
+    const missingChunkIndices = [];
     for (let i = 0; i < targetTotalChunks; i++) {
         if (!receivedChunks.hasOwnProperty(i)) {
-            const targetSid = openPeerSids[peerIndex % openPeerSids.length];
-            const dc = dataChannels[targetSid];
-            if (dc && dc.readyState === 'open' && dc.bufferedAmount < 65536) {
-                dc.send(JSON.stringify({ type: 'request_chunk', chunkIndex: i, fileHash: currentFileHash }));
-                peerIndex++;
-            }
+            missingChunkIndices.push(i);
         }
     }
+
+    if (missingChunkIndices.length === 0) return;
+
+    missingChunkIndices.forEach((chunkIndex, idx) => {
+        const targetSid = openPeerSids[idx % openPeerSids.length];
+        const dc = dataChannels[targetSid];
+
+        if (dc && dc.readyState === 'open' && dc.bufferedAmount < 65536) {
+            dc.send(JSON.stringify({
+                type: 'request_chunk',
+                chunkIndex: chunkIndex,
+                fileHash: currentFileHash
+            }));
+        }
+    });
 }
 
 function sendChunkToPeer(targetSid, chunkIndex, requestedHash) {
@@ -407,8 +434,12 @@ function handleIncomingChunkBuffer(buffer, senderSid) {
     if (!receivedChunks.hasOwnProperty(chunkIndex)) {
         receivedChunks[chunkIndex] = chunkData;
 
-        peerChunkCounters[senderSid] = (peerChunkCounters[senderSid] || 0) + 1;
-        const peerChunksReceived = peerChunkCounters[senderSid];
+        if (!peerReceivedChunkSets[senderSid]) {
+            peerReceivedChunkSets[senderSid] = new Set();
+        }
+        peerReceivedChunkSets[senderSid].add(chunkIndex);
+
+        const peerChunksReceived = peerReceivedChunkSets[senderSid].size;
         const peerPercentage = Math.min(100, ((peerChunksReceived / targetTotalChunks) * 100)).toFixed(1);
         
         const countElem = document.getElementById(`chunk-count-${senderSid}`);

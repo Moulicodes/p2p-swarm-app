@@ -14,7 +14,29 @@
         <header>
             <h1>Hybrid P2P Swarm Node</h1>
             <p id="node-status" class="status-offline">Connecting to Tracker...</p>
+            
+            <!-- Auth Status / Login Bar -->
+            <div id="auth-bar" class="auth-bar">
+                {% if current_user.is_authenticated %}
+                    <span>Logged in as <strong>{{ current_user.username }}</strong> ({{ current_user.node_id }})</span>
+                    <a href="/logout" class="btn-small btn-danger">Logout</a>
+                {% else %}
+                    <button class="btn-small" onclick="toggleAuthModal('login')">Login</button>
+                    <button class="btn-small btn-secondary" onclick="toggleAuthModal('register')">Register</button>
+                {% endif %}
+            </div>
         </header>
+
+        <!-- Flash Messages -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <div class="flash-messages">
+                    {% for category, message in messages %}
+                        <div class="toast toast-{{ category }}">{{ message }}</div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
         
         <main class="grid-layout">
             <!-- File Search Catalog Bar -->
@@ -50,7 +72,10 @@
                     <input type="file" id="file-input">
                     <button id="seed-btn" onclick="registerAndSeedFile()">Seed File to Swarm</button>
                 </div>
-                <h3 style="margin-top: 1rem; font-size: 0.95rem; color: #38bdf8;">Your Active Seeded Files (Saved Locally)</h3>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 1rem;">
+                    <h3 style="font-size: 0.95rem; color: #38bdf8;">Your Active Seeded Files (Saved Locally)</h3>
+                    <button class="btn-small btn-danger" onclick="clearLocalStorageAndReload()">Clear Saved Files</button>
+                </div>
                 <div class="seeded-table-container">
                     <table class="data-table">
                         <thead>
@@ -102,6 +127,66 @@
         </main>
     </div>
 
+    <!-- Auth Modal Form -->
+    <div id="auth-modal" class="modal hidden">
+        <div class="modal-content">
+            <span class="close-btn" onclick="toggleAuthModal()">&times;</span>
+            <h2 id="modal-title">Account Login</h2>
+            
+            <form id="login-form" action="/login" method="POST">
+                <div class="form-group">
+                    <label>Username</label>
+                    <input type="text" name="username" required>
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" name="password" required>
+                </div>
+                <button type="submit" style="width:100%; margin-top:1rem;">Login</button>
+            </form>
+
+            <form id="register-form" action="/register" method="POST" class="hidden">
+                <div class="form-group">
+                    <label>Username</label>
+                    <input type="text" name="username" required>
+                </div>
+                <div class="form-group">
+                    <label>Email</label>
+                    <input type="email" name="email" required>
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" name="password" required>
+                </div>
+                <button type="submit" style="width:100%; margin-top:1rem;">Register Account</button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        function toggleAuthModal(mode) {
+            const modal = document.getElementById('auth-modal');
+            const loginForm = document.getElementById('login-form');
+            const regForm = document.getElementById('register-form');
+            const title = document.getElementById('modal-title');
+
+            if (!mode) {
+                modal.classList.add('hidden');
+                return;
+            }
+
+            modal.classList.remove('hidden');
+            if (mode === 'login') {
+                title.textContent = 'Account Login';
+                loginForm.classList.remove('hidden');
+                regForm.classList.add('hidden');
+            } else {
+                title.textContent = 'Register Account';
+                loginForm.classList.add('hidden');
+                regForm.classList.remove('hidden');
+            }
+        }
+    </script>
     <script src="{{ url_for('static', filename='js/socket_signaling.js') }}"></script>
     <script src="{{ url_for('static', filename='js/webrtc_engine.js') }}"></script>
 </body>
