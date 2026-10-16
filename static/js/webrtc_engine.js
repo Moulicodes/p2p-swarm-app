@@ -36,10 +36,9 @@ let chunkRetryInterval = null;
 let peerServedChunkSets = {};
 let peerReceivedChunkSets = {};
 
-// --- INDEXEDDB STORAGE SYSTEM ---
+// --- USER-SCOPED INDEXEDDB STORAGE SYSTEM ---
 let currentUserId = null;
 
-// Upgrade IndexedDB Schema to Version 2 to support user_id index
 let db;
 const dbRequest = indexedDB.open("SwarmP2PStorage", 2);
 
@@ -52,7 +51,6 @@ dbRequest.onupgradeneeded = function(e) {
         store = e.target.transaction.objectStore("seeded_files");
     }
     
-    // Add user_id index if it doesn't exist
     if (!store.indexNames.contains("user_id")) {
         store.createIndex("user_id", "user_id", { unique: false });
     }
@@ -89,7 +87,6 @@ function loadStoredFilesFromIDB() {
     const tx = db.transaction("seeded_files", "readonly");
     const store = tx.objectStore("seeded_files");
     
-    // Fetch only files matching the active user_id
     const userIndex = store.index("user_id");
     const req = userIndex.getAll(currentUserId);
 
@@ -264,7 +261,7 @@ function joinSwarmAndDownload() {
     socket.emit('join_swarm', { file_hash: currentFileHash });
 }
 
-// --- WEBRTC PIPELINE WITH LIVE TELEMETRY & FRIENDLY NAMES ---
+// --- WEBRTC PIPELINE WITH RECOVERY & TELEMETRY ---
 function createPeerConnection(targetSid, isInitiator, friendlyName) {
     if (peerConnections[targetSid]) {
         const state = peerConnections[targetSid].signalingState;
@@ -315,19 +312,23 @@ function setupDataChannelEvents(dc, targetSid, optionalName) {
         logEvent(`P2P DataChannel OPENED with Peer: ${targetSid.substring(0, 8)}...`);
         showToast('P2P Direct Channel Opened!', 'success');
         
-        // Lookup friendly username
-        const friendlyName = optionalName || peerNamesMap[targetSid] || `Peer-${targetSid.substring(0, 6)}`;
+        const friendlyName = optionalName || (typeof peerNamesMap !== 'undefined' && peerNamesMap[targetSid]) || `Peer-${targetSid.substring(0, 6)}`;
         addPeerToUI(targetSid, friendlyName);
         
+        // Instantly scan and request missing chunks over new channel
         requestMissingChunks();
     };
 
     dc.onmessage = (event) => {
         if (typeof event.data === 'string') {
-            const msg = JSON.parse(event.data);
-            if (msg.type === 'request_chunk') {
-                sendChunkToPeer(targetSid, msg.chunkIndex, msg.fileHash);
-                updateSeederProgressUI(targetSid, msg.fileHash, msg.chunkIndex);
+            try {
+                const msg = JSON.parse(event.data);
+                if (msg.type === 'request_chunk') {
+                    sendChunkToPeer(targetSid, msg.chunkIndex, msg.fileHash);
+                    updateSeederProgressUI(targetSid, msg.fileHash, msg.chunkIndex);
+                }
+            } catch (e) {
+                console.error("Failed to parse string message:", e);
             }
         } else {
             handleIncomingChunkBuffer(event.data, targetSid);
@@ -339,7 +340,9 @@ function setupDataChannelEvents(dc, targetSid, optionalName) {
         removePeerFromUI(targetSid);
     };
 
-    dc.onerror = (err) => logEvent(`DataChannel Error: ${err}`);
+    dc.onerror = (err) => {
+        logEvent(`DataChannel Error on ${targetSid.substring(0, 8)}: ${err.message || 'Connection Interrupted'}`);
+    };
 }
 
 // --- TELEMETRY UI DOM HELPERS ---
@@ -393,23 +396,22 @@ function updateLeecherProgressUI(senderSid) {
         peerReceivedChunkSets[senderSid] = new Set();
     }
     
-    const chunkCount = Object.keys(receivedChunks).length;
-    peerReceivedChunkSets[senderSid].add(chunkCount);
+    const downloadedCount = Object.keys(receivedChunks).length;
+    peerReceivedChunkSets[senderSid].add(downloadedCount);
 
-    const uniqueCount = Object.keys(receivedChunks).length;
     const total = targetTotalChunks || 1;
-    const percentage = Math.min(100, ((uniqueCount / total) * 100)).toFixed(1);
+    const percentage = Math.min(100, ((downloadedCount / total) * 100)).toFixed(1);
 
     const countElem = document.getElementById(`chunk-count-${senderSid}`);
     const pctElem = document.getElementById(`chunk-pct-${senderSid}`);
     if (countElem && pctElem) {
-        countElem.textContent = uniqueCount;
+        countElem.textContent = downloadedCount;
         pctElem.textContent = `${percentage}%`;
     }
 }
 
 window.handleIncomingOffer = async function(fromSid, offer) {
-    const friendlyName = peerNamesMap[fromSid] || `Peer-${fromSid.substring(0, 6)}`;
+    const friendlyName = (typeof peerNamesMap !== 'undefined' && peerNamesMap[fromSid]) || `Peer-${fromSid.substring(0, 6)}`;
     const pc = createPeerConnection(fromSid, false, friendlyName);
     try {
         if (pc.signalingState !== "stable") {
@@ -466,8 +468,10 @@ window.handleIncomingICE = async function(fromSid, candidate) {
     }
 };
 
-// Throttled Chunk Requesting with Backpressure Management
+// --- THROTTLED CHUNK REQUESTING WITH RECOVERY & FLOW CONTROL ---
 function requestMissingChunks() {
+    if (!currentFileHash || !targetTotalChunks) return;
+
     const openPeerSids = Object.keys(dataChannels).filter(
         sid => dataChannels[sid] && dataChannels[sid].readyState === 'open'
     );
@@ -483,7 +487,7 @@ function requestMissingChunks() {
 
     if (missingChunkIndices.length === 0) return;
 
-    // Limit maximum in-flight requests to avoid buffer congestion
+    // Limit in-flight requests to avoid buffer congestion
     const MAX_IN_FLIGHT = 64; 
     const currentInFlight = missingChunkIndices.slice(0, MAX_IN_FLIGHT);
 
@@ -491,7 +495,6 @@ function requestMissingChunks() {
         const targetSid = openPeerSids[idx % openPeerSids.length];
         const dc = dataChannels[targetSid];
 
-        // Only send request if the DataChannel buffer is clear (< 64 KB)
         if (dc && dc.readyState === 'open' && dc.bufferedAmount < 65536) {
             dc.send(JSON.stringify({
                 type: 'request_chunk',
@@ -508,7 +511,6 @@ function sendChunkToPeer(targetSid, chunkIndex, requestedHash) {
     
     if (!dc || dc.readyState !== 'open' || !sourceChunks || !sourceChunks[chunkIndex]) return;
 
-    // Set high water mark for backpressure management
     dc.bufferedAmountLowThreshold = 65536; // 64 KB
 
     const chunkBuffer = sourceChunks[chunkIndex];
@@ -518,11 +520,9 @@ function sendChunkToPeer(targetSid, chunkIndex, requestedHash) {
     packet.set(new Uint8Array(header.buffer), 0);
     packet.set(new Uint8Array(chunkBuffer), header.byteLength);
     
-    // Check if channel is congested before sending
-    if (dc.bufferedAmount > 1048576) { // 1 MB buffer limit
-        // Wait for buffer to drain before sending more
+    if (dc.bufferedAmount > 1048576) { // 1 MB backpressure limit
         dc.onbufferedamountlow = () => {
-            dc.onbufferedamountlow = null; // Clear handler
+            dc.onbufferedamountlow = null;
             try {
                 dc.send(packet.buffer);
             } catch (e) {
@@ -553,7 +553,6 @@ function handleIncomingChunkBuffer(buffer, senderSid) {
         document.getElementById('dl-progress-text').textContent = `${progressPercent}%`;
         document.getElementById('dl-chunks-text').textContent = `${downloadedCount}/${targetTotalChunks}`;
 
-        // Update live chunk progress for this specific seeder in the Connected Peers UI
         updateLeecherProgressUI(senderSid);
 
         if (downloadedCount === targetTotalChunks) {
