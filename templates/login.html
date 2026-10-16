@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - Hybrid P2P Swarm Network</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        .auth-card {
+            background: #1e293b;
+            border: 1px solid #334155;
+            padding: 2.5rem;
+            border-radius: 12px;
+            width: 380px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+        }
+        .auth-card h1 {
+            color: #38bdf8;
+            font-size: 1.6rem;
+            text-align: center;
+            margin-bottom: 0.5rem;
+        }
+        .auth-card p {
+            color: #94a3b8;
+            font-size: 0.85rem;
+            text-align: center;
+            margin-bottom: 1.5rem;
+        }
+        .tab-buttons {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+        }
+        .tab-btn {
+            flex: 1;
+            background: #0f172a;
+            color: #94a3b8;
+            border: 1px solid #334155;
+            padding: 0.5rem;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .tab-btn.active {
+            background: #0284c7;
+            color: #fff;
+            border-color: #0284c7;
+        }
+    </style>
+</head>
+<body>
+    <div class="auth-card">
+        <h1>P2P Swarm Portal</h1>
+        <p>Authenticate to access persistent node swarm transfers</p>
+
+        <!-- Flash Messages -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <div style="margin-bottom: 1rem;">
+                    {% for category, message in messages %}
+                        <div class="toast toast-{{ category }}" style="position: static; margin-bottom: 0.5rem; padding: 0.5rem;">{{ message }}</div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
+
+        <div class="tab-buttons">
+            <button id="btn-login-tab" class="tab-btn active" onclick="switchTab('login')">Login</button>
+            <button id="btn-reg-tab" class="tab-btn" onclick="switchTab('register')">Register</button>
+        </div>
+
+        <!-- Login Form -->
+        <form id="login-form" action="/login" method="POST">
+            <div class="form-group">
+                <label>Username</label>
+                <input type="text" name="username" required placeholder="Enter username">
+            </div>
+            <div class="form-group" style="margin-top: 1rem;">
+                <label>Password</label>
+                <input type="password" name="password" required placeholder="Enter password">
+            </div>
+            <button type="submit" style="width: 100%; margin-top: 1.5rem;">Sign In</button>
+        </form>
+
+        <!-- Register Form -->
+        <form id="register-form" action="/register" method="POST" style="display: none;">
+            <div class="form-group">
+                <label>Username</label>
+                <input type="text" name="username" required placeholder="Choose username">
+            </div>
+            <div class="form-group" style="margin-top: 1rem;">
+                <label>Email</label>
+                <input type="email" name="email" required placeholder="name@domain.com">
+            </div>
+            <div class="form-group" style="margin-top: 1rem;">
+                <label>Password</label>
+                <input type="password" name="password" required placeholder="Choose password">
+            </div>
+            <button type="submit" style="width: 100%; margin-top: 1.5rem;">Create Account</button>
+        </form>
+    </div>
+
+    <script>
+        function switchTab(mode) {
+            const loginForm = document.getElementById('login-form');
+            const regForm = document.getElementById('register-form');
+            const loginBtn = document.getElementById('btn-login-tab');
+            const regBtn = document.getElementById('btn-reg-tab');
+
+            if (mode === 'login') {
+                loginForm.style.display = 'block';
+                regForm.style.display = 'none';
+                loginBtn.classList.add('active');
+                regBtn.classList.remove('active');
+            } else {
+                loginForm.style.display = 'none';
+                regForm.style.display = 'block';
+                regBtn.classList.add('active');
+                loginBtn.classList.remove('active');
+            }
+        }
+    </script>
+</body>
+</html>

@@ -64,7 +64,9 @@ socket_to_user = {}
 # --- HTTP AUTHENTICATION ROUTES ---
 @app.route('/')
 def index():
-    return render_template('index.html')
+    if not current_user.is_authenticated:
+        return render_template('login.html')  # Redirect unauthenticated users to Login/Register page
+    return render_template('index.html')      # Serve Swarm Dashboard only to logged-in users
 
 @app.route('/register', methods=['POST'])
 def register():
