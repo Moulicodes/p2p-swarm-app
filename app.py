@@ -109,6 +109,7 @@ def user_info():
     if current_user.is_authenticated:
         return jsonify({
             'logged_in': True,
+            'user_id': current_user.id,
             'username': current_user.username,
             'node_id': current_user.node_id
         })

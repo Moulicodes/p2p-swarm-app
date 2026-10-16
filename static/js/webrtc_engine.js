@@ -37,26 +37,44 @@ let peerServedChunkSets = {};
 let peerReceivedChunkSets = {};
 
 // --- INDEXEDDB STORAGE SYSTEM ---
+let currentUserId = null;
+
+// Upgrade IndexedDB Schema to Version 2 to support user_id index
 let db;
-const dbRequest = indexedDB.open("SwarmP2PStorage", 1);
+const dbRequest = indexedDB.open("SwarmP2PStorage", 2);
 
 dbRequest.onupgradeneeded = function(e) {
     db = e.target.result;
+    let store;
     if (!db.objectStoreNames.contains("seeded_files")) {
-        db.createObjectStore("seeded_files", { keyPath: "fileHash" });
+        store = db.createObjectStore("seeded_files", { keyPath: "fileHash" });
+    } else {
+        store = e.target.transaction.objectStore("seeded_files");
+    }
+    
+    // Add user_id index if it doesn't exist
+    if (!store.indexNames.contains("user_id")) {
+        store.createIndex("user_id", "user_id", { unique: false });
     }
 };
 
 dbRequest.onsuccess = function(e) {
     db = e.target.result;
-    loadStoredFilesFromIDB();
+    if (currentUserId) {
+        loadStoredFilesFromIDB();
+    }
 };
 
 function saveFileToIDB(fileHash, filename, chunks) {
-    if (!db) return;
+    if (!db || !currentUserId) return;
     const tx = db.transaction("seeded_files", "readwrite");
     const store = tx.objectStore("seeded_files");
-    store.put({ fileHash, filename, chunks });
+    store.put({ 
+        fileHash: fileHash, 
+        filename: filename, 
+        chunks: chunks, 
+        user_id: currentUserId 
+    });
 }
 
 function deleteFileFromIDB(fileHash) {
@@ -67,10 +85,13 @@ function deleteFileFromIDB(fileHash) {
 }
 
 function loadStoredFilesFromIDB() {
-    if (!db) return;
+    if (!db || !currentUserId) return;
     const tx = db.transaction("seeded_files", "readonly");
     const store = tx.objectStore("seeded_files");
-    const req = store.getAll();
+    
+    // Fetch only files matching the active user_id
+    const userIndex = store.index("user_id");
+    const req = userIndex.getAll(currentUserId);
 
     req.onsuccess = function() {
         const records = req.result || [];
@@ -445,6 +466,7 @@ window.handleIncomingICE = async function(fromSid, candidate) {
     }
 };
 
+// Throttled Chunk Requesting with Backpressure Management
 function requestMissingChunks() {
     const openPeerSids = Object.keys(dataChannels).filter(
         sid => dataChannels[sid] && dataChannels[sid].readyState === 'open'
@@ -461,10 +483,15 @@ function requestMissingChunks() {
 
     if (missingChunkIndices.length === 0) return;
 
-    missingChunkIndices.forEach((chunkIndex, idx) => {
+    // Limit maximum in-flight requests to avoid buffer congestion
+    const MAX_IN_FLIGHT = 64; 
+    const currentInFlight = missingChunkIndices.slice(0, MAX_IN_FLIGHT);
+
+    currentInFlight.forEach((chunkIndex, idx) => {
         const targetSid = openPeerSids[idx % openPeerSids.length];
         const dc = dataChannels[targetSid];
 
+        // Only send request if the DataChannel buffer is clear (< 64 KB)
         if (dc && dc.readyState === 'open' && dc.bufferedAmount < 65536) {
             dc.send(JSON.stringify({
                 type: 'request_chunk',
@@ -479,14 +506,30 @@ function sendChunkToPeer(targetSid, chunkIndex, requestedHash) {
     const dc = dataChannels[targetSid];
     const sourceChunks = multiSeederStore[requestedHash];
     
-    if (dc && dc.readyState === 'open' && sourceChunks && sourceChunks[chunkIndex]) {
-        const chunkBuffer = sourceChunks[chunkIndex];
-        const header = new Int32Array([chunkIndex]);
-        const packet = new Uint8Array(header.byteLength + chunkBuffer.byteLength);
-        
-        packet.set(new Uint8Array(header.buffer), 0);
-        packet.set(new Uint8Array(chunkBuffer), header.byteLength);
-        
+    if (!dc || dc.readyState !== 'open' || !sourceChunks || !sourceChunks[chunkIndex]) return;
+
+    // Set high water mark for backpressure management
+    dc.bufferedAmountLowThreshold = 65536; // 64 KB
+
+    const chunkBuffer = sourceChunks[chunkIndex];
+    const header = new Int32Array([chunkIndex]);
+    const packet = new Uint8Array(header.byteLength + chunkBuffer.byteLength);
+    
+    packet.set(new Uint8Array(header.buffer), 0);
+    packet.set(new Uint8Array(chunkBuffer), header.byteLength);
+    
+    // Check if channel is congested before sending
+    if (dc.bufferedAmount > 1048576) { // 1 MB buffer limit
+        // Wait for buffer to drain before sending more
+        dc.onbufferedamountlow = () => {
+            dc.onbufferedamountlow = null; // Clear handler
+            try {
+                dc.send(packet.buffer);
+            } catch (e) {
+                console.error(`Error sending chunk ${chunkIndex} after drain:`, e);
+            }
+        };
+    } else {
         try {
             dc.send(packet.buffer);
         } catch (e) {

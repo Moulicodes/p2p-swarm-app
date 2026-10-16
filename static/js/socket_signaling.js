@@ -14,10 +14,12 @@ socket.on('connect', () => {
         .then(data => {
             if (data.logged_in) {
                 isUserLoggedIn = true;
+                currentUserId = data.user_id; // Set active user ID for IndexedDB scoping
                 myFriendlyName = `${data.node_id} (${data.username})`;
                 updateHeaderNodeStatus(`Connected as ${data.node_id} (${data.username})`, 'online');
             } else {
                 isUserLoggedIn = false;
+                currentUserId = null;
                 myFriendlyName = `Node-${myPeerSid.substring(0, 4).toUpperCase()}`;
                 updateHeaderNodeStatus(`Connected as ${myFriendlyName} (Guest)`, 'online');
             }
